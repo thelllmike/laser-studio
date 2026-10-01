@@ -122,6 +122,10 @@ h2.sub { margin: 12px 0 6px; }
 .area-box { background: var(--panel-2); border-radius: var(--radius); padding: 8px 9px 9px; margin: 10px 0 8px; }
 .area-box input { padding: 4px 6px; }
 .area-box.off .row, .area-box.off button { opacity: .45; }
+label.lock { flex: none; margin-bottom: 14px; font-size: 13px; }
+label.lock input { width: auto; }
+.xf-btns { display: flex; gap: 4px; margin-bottom: 8px; }
+.xf-btns button { padding: 6px 7px; font-size: 12px; }
 .align-bar { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; margin-bottom: 6px; }
 .align-bar button { padding: 5px 0; display: grid; place-items: center; }
 table.cuts { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 8px; }

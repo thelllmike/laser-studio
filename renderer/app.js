@@ -206,18 +206,120 @@ function snapDrag(bb, dx, dy, tol, moving) {
   return { dx: dx + (sx?.d || 0), dy: dy + (sy?.d || 0), guides: { x: sx ? [sx.at] : [], y: sy ? [sy.at] : [] } };
 }
 
+// ---- rotate / resize / flip
+
+const mat2 = (m, x) => [m[0] * x[0] + m[2] * x[1], m[1] * x[0] + m[3] * x[1], m[0] * x[2] + m[2] * x[3], m[1] * x[2] + m[3] * x[3]];
+const normDeg = (d) => { d = ((d % 360) + 360) % 360; return d > 180 ? d - 360 : d; };
+
+/** Remember where each object is, so a whole drag can be applied from the same starting point. */
+function snapshot(objs) {
+  return objs.map((o) => ({ o, xf: o.xf || IDENTITY_XF, rot: o.rot || 0,
+    px: o.x + (o.geom?.pivot?.x ?? o.geom.width / 2), py: o.y + (o.geom?.pivot?.y ?? o.geom.height / 2) }));
+}
+
+/** Apply linear map M (2×2) around anchor A to snapshotted objects. rotDeg only updates the shown angle. */
+function applyTransform(snap, M, A, rotDeg = 0) {
+  for (const s of snap) {
+    const o = s.o;
+    o.xf = mat2(M, s.xf);
+    o.rot = normDeg(s.rot + rotDeg);
+    rederive(o);
+    const dx = s.px - A.x, dy = s.py - A.y;
+    o.x = A.x + M[0] * dx + M[2] * dy - o.geom.pivot.x;
+    o.y = A.y + M[1] * dx + M[3] * dy - o.geom.pivot.y;
+  }
+}
+const rotM = (deg) => { const r = (deg * Math.PI) / 180; return [Math.cos(r), Math.sin(r), -Math.sin(r), Math.cos(r)]; };
+
+/** One-shot transform of the current selection around its centre (used by the panel buttons). */
+function transformSelection(M, rotDeg = 0) {
+  const objs = selectedObjs().filter((o) => o.base);
+  const bb = objsBBox(objs);
+  if (!bb) return;
+  applyTransform(snapshot(objs), M, { x: (bb.minX + bb.maxX) / 2, y: (bb.minY + bb.maxY) / 2 }, rotDeg);
+  refresh();
+}
+
+// Handle positions (work mm) on the selection's bounding box; the rotate knob sits above the top edge.
+const HANDLES = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
+function handlePoints(bb) {
+  const cx = (bb.minX + bb.maxX) / 2, cy = (bb.minY + bb.maxY) / 2;
+  return { nw: [bb.minX, bb.maxY], n: [cx, bb.maxY], ne: [bb.maxX, bb.maxY], e: [bb.maxX, cy],
+    se: [bb.maxX, bb.minY], s: [cx, bb.minY], sw: [bb.minX, bb.minY], w: [bb.minX, cy] };
+}
+const OPPOSITE = { nw: 'se', n: 's', ne: 'sw', e: 'w', se: 'nw', s: 'n', sw: 'ne', w: 'e' };
+const ROT_KNOB_PX = 26;
+
+/** Which handle (if any) is under screen point (px, py)? */
+function handleAt(px, py) {
+  const objs = selectedObjs().filter((o) => o.base);
+  const bb = objsBBox(objs);
+  if (!bb || drag || marquee) return null;
+  const v = view(), wco = grbl.status.wco;
+  const toS = ([x, y]) => v.toPx(x + wco.x, y + wco.y);
+  const [tx, ty] = toS([(bb.minX + bb.maxX) / 2, bb.maxY]);
+  if (Math.hypot(px - tx, py - (ty - ROT_KNOB_PX)) <= 8) return 'rot';
+  const pts = handlePoints(bb);
+  for (const k of HANDLES) {
+    const [hx, hy] = toS(pts[k]);
+    if (Math.abs(px - hx) <= 6 && Math.abs(py - hy) <= 6) return k;
+  }
+  return null;
+}
+const HANDLE_CURSOR = { nw: 'nwse-resize', se: 'nwse-resize', ne: 'nesw-resize', sw: 'nesw-resize', n: 'ns-resize', s: 'ns-resize', e: 'ew-resize', w: 'ew-resize', rot: 'crosshair' };
+
 function objsBBox(objs) {
   const pts = objs.filter((o) => o.geom).map((o) => [{ x: o.x, y: o.y }, { x: o.x + o.geom.width, y: o.y + o.geom.height }]);
   return Geometry.bbox(pts);
 }
 
+// Every object keeps its untransformed geometry in `base` and a 2×2 transform `xf` ([a, b, c, d]:
+// x' = a·x + c·y, y' = b·x + d·y) for rotate / resize / flip, applied around the base's centre.
+// `geom` (and `parts` for imported items) is the transformed result, normalised so its bounding box
+// starts at (0, 0); geom.pivot is where the base's centre ended up inside that box.
+const IDENTITY_XF = [1, 0, 0, 1];
+
+function transformParts(parts, w, h, xf) {
+  const { mul, apply, translate, } = Geometry.mat;
+  const T = mul([xf[0], xf[1], xf[2], xf[3], 0, 0], translate(-w / 2, -h / 2));
+  const out = parts.map((p) => ({
+    cut: p.cut,
+    polys: p.polys.map((poly) => poly.map((pt) => apply(T, pt.x, pt.y))),
+    images: p.images.map((im) => ({ ...im, m: mul(T, im.m) })),
+  }));
+  const bb = Geometry.bbox(out.flatMap((p) => [...p.polys, ...p.images.map(Geometry.imageCorners)]))
+    || { minX: 0, minY: 0, maxX: 0, maxY: 0 };
+  const shift = translate(-bb.minX, -bb.minY);
+  for (const p of out) {
+    p.polys = p.polys.map((poly) => poly.map((pt) => ({ x: pt.x - bb.minX, y: pt.y - bb.minY })));
+    for (const im of p.images) im.m = mul(shift, im.m);
+  }
+  return { parts: out, width: bb.maxX - bb.minX, height: bb.maxY - bb.minY, pivot: { x: -bb.minX, y: -bb.minY } };
+}
+
+/** Recompute an object's transformed geometry from its base (synchronous once the base exists). */
+function rederive(o) {
+  if (!o.base) return;
+  const xf = o.xf || IDENTITY_XF;
+  const d = transformParts(o.base.parts, o.base.width, o.base.height, xf);
+  if (o.type === 'project') {
+    o.parts = d.parts;
+    o.geom = { key: 'project', width: d.width, height: d.height, pivot: d.pivot };
+  } else {
+    o.geom = { key: o.base.key, xk: xf.join(), polys: d.parts[0].polys, width: d.width, height: d.height, pivot: d.pivot };
+  }
+}
+
 async function ensureGeom(obj) {
   if (obj.type === 'project') return obj.geom;
   const key = `${obj.text}|${obj.font}|${obj.height}`;
-  if (obj.geom && obj.geom.key === key) return obj.geom;
-  const font = await getFont(obj.font);
-  const g = Geometry.textToPolylines(font, obj.text, obj.height);
-  if (`${obj.text}|${obj.font}|${obj.height}` === key) obj.geom = { key, ...g };
+  if (!obj.base || obj.base.key !== key) {
+    const font = await getFont(obj.font);
+    const g = Geometry.textToPolylines(font, obj.text, obj.height);
+    if (`${obj.text}|${obj.font}|${obj.height}` !== key) return obj.geom; // edited again meanwhile
+    obj.base = { key, parts: [{ polys: g.polys, images: [] }], width: g.width, height: g.height };
+  }
+  if (!obj.geom || obj.geom.key !== key || obj.geom.xk !== (obj.xf || IDENTITY_XF).join()) rederive(obj);
   return obj.geom;
 }
 
@@ -227,7 +329,7 @@ async function addText() {
   const obj = {
     id: uid(), type: 'text', text: 'Hello', font: defaultFont, height: 20,
     x: round1(p.bedW / 2 - 30), y: round1(p.bedH / 2 - 10),
-    mode: 'line', power: 80, speed: 1000, passes: 1, interval: 0.1,
+    mode: 'line', power: 80, speed: 1000, passes: 1, interval: 0.1, xf: IDENTITY_XF, rot: 0,
   };
   objects.push(obj);
   select([obj.id]);
@@ -279,7 +381,20 @@ const PROPS = {
 };
 
 let propsFor = null;
+function renderTransform() {
+  const objs = selectedObjs().filter((o) => o.base);
+  const bb = objsBBox(objs);
+  $('xfSection').hidden = !bb;
+  if (!bb) return;
+  const set = (id, v) => { if (document.activeElement !== $(id)) $(id).value = v; };
+  set('xfW', round1(bb.maxX - bb.minX));
+  set('xfH', round1(bb.maxY - bb.minY));
+  set('xfRot', objs.length === 1 ? Math.round((objs[0].rot || 0) * 10) / 10 : '');
+  $('xfRot').placeholder = objs.length > 1 ? 'adds' : '0';
+}
+
 function renderProps() {
+  renderTransform();
   const o = selected();
   $('propsSection').hidden = !o || o.type === 'project';
   $('projSection').hidden = !o || o.type !== 'project';
@@ -477,7 +592,12 @@ async function importFiles(fileList) {
       const proj = await LightBurn.load(await file.text(), file.name.replace(/\.lbrn2?$/i, ''));
       const f = { id: uid(), name: proj.name, cuts: proj.cuts, skipped: proj.skipped, selCut: null };
       files.set(f.id, f);
-      const items = proj.items.map((it) => ({ id: uid(), type: 'project', fileId: f.id, ...it }));
+      const items = proj.items.map((it) => {
+        const o = { id: uid(), type: 'project', fileId: f.id, ...it, xf: IDENTITY_XF, rot: 0 };
+        o.base = { parts: it.parts, width: it.geom.width, height: it.geom.height };
+        rederive(o);
+        return o;
+      });
       objects.push(...items);
       select(items.map((o) => o.id));
       const bb = objsBBox(items);
@@ -653,6 +773,42 @@ function draw() {
     for (const gy of drag.guides.y) { const [, py] = v.toPx(0, gy + wco.y); line(0, py, W, py); }
   }
 
+  // resize / rotate handles around the selection
+  const selBB = !marquee && objsBBox(selectedObjs().filter((o) => o.base));
+  if (selBB && !(drag && drag.kind === 'move')) {
+    const toS = ([x, y]) => v.toPx(x + wco.x, y + wco.y);
+    const [x0, y0] = toS([selBB.minX, selBB.maxY]), [x1, y1] = toS([selBB.maxX, selBB.minY]);
+    if (selection.size > 1) {
+      ctx.strokeStyle = '#60a5fa'; ctx.lineWidth = 1;
+      ctx.strokeRect(x0 - 3, y0 - 3, x1 - x0 + 6, y1 - y0 + 6);
+    }
+    const tx = (x0 + x1) / 2;
+    ctx.strokeStyle = '#60a5fa'; ctx.lineWidth = 1;
+    line(tx, y0 - 3, tx, y0 - ROT_KNOB_PX + 6);
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath(); ctx.arc(tx, y0 - ROT_KNOB_PX, 6, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.arc(tx, y0 - ROT_KNOB_PX, 3, -Math.PI * 0.9, Math.PI * 0.4); ctx.stroke();
+    const pts = handlePoints(selBB);
+    for (const k of HANDLES) {
+      const [hx, hy] = toS(pts[k]);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(hx - 4, hy - 4, 8, 8);
+      ctx.strokeRect(hx - 4, hy - 4, 8, 8);
+    }
+    if (drag?.kind === 'rot' || drag?.kind === 'scale') {
+      const o = selected();
+      const label = drag.kind === 'rot' ? `${Math.round(o?.rot ?? 0)}°`
+        : `${(selBB.maxX - selBB.minX).toFixed(1)} × ${(selBB.maxY - selBB.minY).toFixed(1)} mm`;
+      ctx.font = '11px -apple-system, sans-serif';
+      const tw = ctx.measureText(label).width + 10;
+      ctx.fillStyle = 'rgba(17,24,39,.9)';
+      ctx.fillRect(drag.lastX + 14, drag.lastY + 10, tw, 18);
+      ctx.fillStyle = '#e6e7ea';
+      ctx.textAlign = 'left';
+      ctx.fillText(label, drag.lastX + 19, drag.lastY + 23);
+    }
+  }
+
   // work origin
   const [ox, oy] = v.toPx(wco.x, wco.y);
   ctx.strokeStyle = '#22c55e';
@@ -751,6 +907,22 @@ canvas.addEventListener('pointerdown', (e) => {
   const wco = grbl.status.wco;
   const dx = mx - wco.x, dy = my - wco.y;
   const tol = 6 / v.s;
+
+  const handle = handleAt(e.offsetX, e.offsetY);
+  if (handle) {
+    const objs = selectedObjs().filter((o) => o.base);
+    const bb = objsBBox(objs);
+    const pts = handlePoints(bb);
+    drag = {
+      kind: handle === 'rot' ? 'rot' : 'scale', handle, bb, snap: snapshot(objs), moved: false,
+      start: { x: dx, y: dy }, center: { x: (bb.minX + bb.maxX) / 2, y: (bb.minY + bb.maxY) / 2 },
+      grab: handle === 'rot' ? null : { x: pts[handle][0], y: pts[handle][1] },
+      opp: handle === 'rot' ? null : { x: pts[OPPOSITE[handle]][0], y: pts[OPPOSITE[handle]][1] },
+      lastX: e.offsetX, lastY: e.offsetY,
+    };
+    canvas.setPointerCapture(e.pointerId);
+    return;
+  }
   const hits = objects.filter((o) => o.geom &&
     dx >= o.x - tol && dx <= o.x + o.geom.width + tol && dy >= o.y - tol && dy <= o.y + o.geom.height + tol);
   const hit = hits.sort((a, b) => a.geom.width * a.geom.height - b.geom.width * b.geom.height)[0];
@@ -765,7 +937,7 @@ canvas.addEventListener('pointerdown', (e) => {
     const objs = selectedObjs();
     // A click (no drag) on an item inside a bigger selection narrows the selection to that item.
     const narrowTo = !(e.shiftKey || e.metaKey) && selection.size > 1 ? hit.id : null;
-    drag = { objs, start: objs.map((o) => [o.x, o.y]), bb: objsBBox(objs), sx: mx, sy: my, moved: false, narrowTo, guides: null };
+    drag = { kind: 'move', objs, start: objs.map((o) => [o.x, o.y]), bb: objsBBox(objs), sx: mx, sy: my, moved: false, narrowTo, guides: null };
     canvas.setPointerCapture(e.pointerId);
     canvas.style.cursor = 'grabbing';
   }
@@ -784,7 +956,48 @@ canvas.addEventListener('pointermove', (e) => {
     draw();
     return;
   }
-  if (!drag) return;
+  if (!drag) {
+    const hnd = handleAt(e.offsetX, e.offsetY);
+    canvas.style.cursor = spaceHeld ? 'grab' : hnd ? HANDLE_CURSOR[hnd] : 'default';
+    return;
+  }
+  if (drag.kind === 'rot' || drag.kind === 'scale') {
+    const v = view(), wco = grbl.status.wco;
+    const [mx, my] = v.toMm(e.offsetX, e.offsetY);
+    const p = { x: mx - wco.x, y: my - wco.y };
+    drag.moved = true;
+    drag.lastX = e.offsetX; drag.lastY = e.offsetY;
+    if (drag.kind === 'rot') {
+      const c = drag.center;
+      let deg = ((Math.atan2(p.y - c.y, p.x - c.x) - Math.atan2(drag.start.y - c.y, drag.start.x - c.x)) * 180) / Math.PI;
+      // Snap the resulting angle: every 15° with Shift, otherwise to 45° steps when within 3°.
+      const base = drag.snap.find((s) => s.o.id === selectedId)?.rot ?? 0;
+      const target = base + deg;
+      const step = e.shiftKey ? 15 : 45;
+      const snapped = Math.round(target / step) * step;
+      if (e.shiftKey || Math.abs(snapped - target) < 3) deg = snapped - base;
+      applyTransform(drag.snap, rotM(deg), c, deg);
+    } else {
+      const h = drag.handle;
+      const A = e.altKey ? drag.center : drag.opp;
+      const g = drag.grab;
+      const minK = 0.5 / Math.max(1, drag.bb.maxX - drag.bb.minX, drag.bb.maxY - drag.bb.minY);
+      const ratio = (cur, grab, anchor) => (Math.abs(grab - anchor) < 1e-9 ? 1 : (cur - anchor) / (grab - anchor));
+      let kx = h.includes('e') || h.includes('w') ? ratio(p.x, g.x, A.x) : 1;
+      let ky = h.includes('n') || h.includes('s') ? ratio(p.y, g.y, A.y) : 1;
+      if (h.length === 2 && !e.shiftKey) {
+        // Corners keep proportions: use the drag distance along the diagonal.
+        const vx = g.x - A.x, vy = g.y - A.y;
+        const k = ((p.x - A.x) * vx + (p.y - A.y) * vy) / (vx * vx + vy * vy || 1);
+        kx = ky = k;
+      }
+      kx = Math.max(minK, kx); ky = Math.max(minK, ky);
+      applyTransform(drag.snap, [kx, 0, 0, ky], A, 0);
+    }
+    renderProps();
+    draw();
+    return;
+  }
   const v = view();
   const [mx, my] = v.toMm(e.offsetX, e.offsetY);
   let ddx = round1(mx - drag.sx), ddy = round1(my - drag.sy);
@@ -821,6 +1034,7 @@ canvas.addEventListener('pointerup', () => {
     refresh();
     return;
   }
+  if (drag && (drag.kind === 'rot' || drag.kind === 'scale')) { drag = null; refresh(); return; }
   if (drag && !drag.moved && drag.narrowTo) { select([drag.narrowTo]); refresh(); }
   drag = null;
   draw();
@@ -1460,6 +1674,31 @@ for (const [id, k] of [['areaW', 'w'], ['areaH', 'h'], ['areaX', 'x'], ['areaY',
 }
 $('areaCenter').onclick = () => { centerArea(); saveArea(); renderArea(); draw(); };
 for (const b of document.querySelectorAll('[data-align]')) b.onclick = () => alignSelection(b.dataset.align);
+
+for (const [id, axis] of [['xfW', 'x'], ['xfH', 'y']]) {
+  $(id).addEventListener('change', () => {
+    const objs = selectedObjs().filter((o) => o.base);
+    const bb = objsBBox(objs);
+    const v = parseFloat($(id).value);
+    if (!bb || !(v > 0)) return renderTransform();
+    const cur = axis === 'x' ? bb.maxX - bb.minX : bb.maxY - bb.minY;
+    if (!(cur > 0)) return;
+    const k = v / cur;
+    const lock = $('xfLock').checked;
+    transformSelection(axis === 'x' ? [k, 0, 0, lock ? k : 1] : [lock ? k : 1, 0, 0, k]);
+  });
+}
+$('xfRot').addEventListener('change', () => {
+  const v = parseFloat($('xfRot').value);
+  if (!Number.isFinite(v)) return renderTransform();
+  const objs = selectedObjs();
+  const deg = objs.length === 1 ? v - (objs[0].rot || 0) : v; // several items: rotate by the amount typed
+  transformSelection(rotM(deg), deg);
+});
+$('xfRotL').onclick = () => transformSelection(rotM(90), 90);
+$('xfRotR').onclick = () => transformSelection(rotM(-90), -90);
+$('xfFlipH').onclick = () => transformSelection([-1, 0, 0, 1]);
+$('xfFlipV').onclick = () => transformSelection([1, 0, 0, -1]);
 
 $('addTextBtn').onclick = addText;
 bindProps();
