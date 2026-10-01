@@ -76,6 +76,7 @@ button.small { font-size: 11px; }
 .objlist li.sel { border-color: var(--accent); }
 .objlist li small { color: var(--muted); margin-left: 6px; }
 .objlist { max-height: 260px; overflow-y: auto; }
+.objlist li { flex: none; } /* keep rows full height; the list scrolls instead */
 .objlist li.file { font-weight: 600; }
 .objlist li.child { margin-left: 14px; padding: 4px 9px; font-size: 12px; }
 
