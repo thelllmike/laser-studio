@@ -809,6 +809,26 @@ function draw() {
     }
   }
 
+  // what Frame will trace – drawn where it will really happen (around the laser head when starting from it)
+  let fr = frameRect();
+  if (fr && $('startFrom').value === 'current' && grbl.connected) {
+    const burn = jobObjects();
+    const { sx, sy } = jobShift(burn.length ? burn : objects.filter((o) => o.geom));
+    fr = { minX: fr.minX + sx, minY: fr.minY + sy, maxX: fr.maxX + sx, maxY: fr.maxY + sy };
+  }
+  if (fr) {
+    const [fx, fy] = v.toPx(fr.minX + wco.x, fr.maxY + wco.y);
+    ctx.strokeStyle = 'rgba(245,158,11,.9)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([3, 4]);
+    ctx.strokeRect(fx - 1, fy - 1, (fr.maxX - fr.minX) * v.s + 2, (fr.maxY - fr.minY) * v.s + 2);
+    ctx.setLineDash([]);
+    ctx.font = '10px -apple-system, sans-serif';
+    ctx.fillStyle = '#f59e0b';
+    ctx.textAlign = 'left';
+    ctx.fillText('Frame', fx, fy + (fr.maxY - fr.minY) * v.s + 14);
+  }
+
   // job origin: the point that will sit under the laser when starting from the current position
   if ($('startFrom').value === 'current') {
     const objs = jobObjects();
@@ -1335,19 +1355,31 @@ function renderJobOrigin() {
   $('jobOriginText').textContent = current ? `${ORIGIN_NAMES[k]} of the ${a}` : 'Not used – design burns at its X/Y';
 }
 
+/** How far the job is moved from where it's drawn: zero, or so the job origin lands under the laser head. */
+function jobShift(objs) {
+  if ($('startFrom').value !== 'current') return { sx: 0, sy: 0 };
+  const box = jobRefBox(objs);
+  if (!box) return { sx: 0, sy: 0 };
+  const a = jobAnchor(box);
+  const pos = grbl.connected ? grbl.status.wpos : { x: 0, y: 0 };
+  return { sx: pos.x - a.x, sy: pos.y - a.y };
+}
+
+/** The rectangle Frame will trace, as drawn on the canvas (before moving it to the laser head). */
+function frameRect() {
+  const what = $('frameWhat').value;
+  if (what === 'area') return areaRect();
+  const burnable = (o) => o.geom && (o.type === 'project' ? o.parts.some((p) => p.cut.enabled) : o.geom.polys?.length);
+  const sel = objects.filter((o) => selection.has(o.id) && burnable(o));
+  return objsBBox(what === 'sel' && sel.length ? sel : objects.filter(burnable));
+}
+
 async function jobItems() {
   for (const o of objects) { try { await ensureGeom(o); } catch {} }
   const items = jobObjects();
   if (!items.length) return [];
 
-  let sx = 0, sy = 0;
-  if ($('startFrom').value === 'current') {
-    // Put the chosen job-origin point (e.g. the middle of the card) under the laser head.
-    const a = jobAnchor(jobRefBox(items));
-    const pos = grbl.connected ? grbl.status.wpos : { x: 0, y: 0 };
-    sx = pos.x - a.x;
-    sy = pos.y - a.y;
-  }
+  const { sx, sy } = jobShift(items);
   const out = [];
   const byCut = new Map();
   for (const o of items) {
@@ -1400,15 +1432,23 @@ function ready() {
 
 $('frameBtn').onclick = async () => {
   if (!ready()) return;
-  const items = await jobItems();
-  if (!items.length) return alert('Add some text first.');
-  const bb = itemsBBox(items);
+  for (const o of objects) { try { await ensureGeom(o); } catch {} }
+  const r = frameRect();
+  if (!r) return alert($('frameWhat').value === 'area' ? 'Turn on the design area first.' : 'Add some text first.');
+  // Same placement as the burn, so the frame shows exactly where the job will go.
+  const burn = jobObjects();
+  const { sx, sy } = jobShift(burn.length ? burn : objects.filter((o) => o.geom));
+  const bb = { minX: r.minX + sx, minY: r.minY + sy, maxX: r.maxX + sx, maxY: r.maxY + sy };
   if (!checkBounds(bb)) return;
+  log(`Framing ${$('frameWhat').selectedOptions[0].text.toLowerCase()}: ${(bb.maxX - bb.minX).toFixed(1)} × ${(bb.maxY - bb.minY).toFixed(1)} mm`);
   // Faint visible beam: never more than 5 %, so framing can't burn the material.
   const p = profile();
   const maxS = grbl.settings['30'] || p.maxS;
   const s = $('frameLaser').checked ? Math.max(1, Math.round((Math.min(5, p.framePower ?? 1) / 100) * maxS)) : 0;
+  // Come back to where the head started: that's the focus / start point the job is placed from.
+  const home = { ...grbl.status.wpos };
   for (const l of Geometry.frameGcode(bb, p.frameSpeed, s)) cmd(l);
+  cmd(`G0 X${home.x.toFixed(3)} Y${home.y.toFixed(3)}`);
 };
 
 $('saveBtn').onclick = async () => {
@@ -1757,14 +1797,16 @@ $('xfFlipV').onclick = () => transformSelection([1, 0, 0, -1]);
   const o = document.querySelector(`input[name=jobOrigin][value="${saved.origin || 'c'}"]`);
   if (o) o.checked = true;
   $('selOnly').checked = !!saved.selOnly;
+  if (saved.frameWhat) $('frameWhat').value = saved.frameWhat;
   const save = () => {
-    store('ls.job', { startFrom: $('startFrom').value, selOnly: $('selOnly').checked,
+    store('ls.job', { startFrom: $('startFrom').value, selOnly: $('selOnly').checked, frameWhat: $('frameWhat').value,
       origin: document.querySelector('input[name=jobOrigin]:checked')?.value });
     renderJobOrigin();
     draw();
   };
   $('startFrom').addEventListener('change', save);
   $('selOnly').addEventListener('change', save);
+  $('frameWhat').addEventListener('change', save);
   for (const r of document.querySelectorAll('input[name=jobOrigin]')) r.addEventListener('change', save);
 }
 

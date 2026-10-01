@@ -206,6 +206,13 @@
         </div>
         <label class="check small-check" title="Frame and Start use only the selected items">
           <input type="checkbox" class="switch" id="selOnly"> Burn selected items only</label>
+        <label class="inline-row">Frame
+          <select id="frameWhat" title="What the Frame button traces (shown as an orange dashed box)">
+            <option value="sel">Selected items</option>
+            <option value="area">Design area (card outline)</option>
+            <option value="all">Everything</option>
+          </select>
+        </label>
         <div class="btngrid">
           <button id="frameBtn">Frame</button>
           <button id="saveBtn">Save G-code</button>

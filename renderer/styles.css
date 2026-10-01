@@ -135,6 +135,8 @@ label.lock input { width: auto; }
 .origin-grid input { display: none; }
 .origin-grid span { display: block; width: 18px; height: 18px; border-radius: 50%; border: 2px solid #4b5058; }
 .origin-grid input:checked + span { background: var(--fire); border-color: var(--fire); }
+label.inline-row { flex-direction: row; align-items: center; gap: 8px; }
+label.inline-row select { flex: 1; }
 .align-bar { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; margin-bottom: 6px; }
 .align-bar button { padding: 5px 0; display: grid; place-items: center; }
 table.cuts { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 8px; }
