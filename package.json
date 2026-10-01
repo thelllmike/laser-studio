@@ -1,0 +1,36 @@
+{
+  "name": "laser-studio",
+  "productName": "Laser Studio",
+  "version": "1.1.0",
+  "description": "Simple GRBL diode laser control: jog, set origin, add text, frame and burn.",
+  "main": "main.js",
+  "author": "Sachin",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --mac dmg --arm64"
+  },
+  "build": {
+    "appId": "com.sachin.laserstudio",
+    "productName": "Laser Studio",
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*"
+    ],
+    "mac": {
+      "category": "public.app-category.graphics-design",
+      "target": "dmg",
+      "identity": null
+    },
+    "dmg": {
+      "title": "Laser Studio"
+    }
+  },
+  "devDependencies": {
+    "electron": "^44.5.1",
+    "electron-builder": "^26.15.3",
+    "opentype.js": "^2.0.0"
+  }
+}

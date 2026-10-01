@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'">
+  <title>Laser Studio</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="dot"></span>Laser Studio</div>
+    <label class="inline">Laser
+      <select id="profileSelect"></select>
+    </label>
+    <button id="editProfileBtn">My laser…</button>
+    <div class="spacer"></div>
+    <span id="statePill" class="pill">Disconnected</span>
+    <span id="posReadout" class="mono readout">X —  Y —</span>
+    <button id="connectBtn" class="primary">Connect</button>
+  </header>
+
+  <main>
+    <aside class="panel">
+      <section>
+        <h2>Design</h2>
+        <div class="btngrid">
+          <button id="addTextBtn">+ Add text</button>
+          <button id="importBtn">Import LightBurn…</button>
+        </div>
+        <input id="importFile" type="file" accept=".lbrn2,.lbrn" hidden multiple>
+        <ul id="objectList" class="objlist"></ul>
+      </section>
+
+      <section id="propsSection" hidden>
+        <h2>Selected text</h2>
+        <label>Text<textarea id="pText" rows="2" spellcheck="false"></textarea></label>
+        <label>Font<select id="pFont"></select></label>
+        <div class="row">
+          <label>Letter height (mm)<input id="pHeight" type="number" min="1" step="0.5"></label>
+          <label>Mode
+            <select id="pMode">
+              <option value="line">Line (outline)</option>
+              <option value="fill">Fill (engrave)</option>
+            </select>
+          </label>
+        </div>
+        <div class="row">
+          <label>X (mm)<input id="pX" type="number" step="0.5"></label>
+          <label>Y (mm)<input id="pY" type="number" step="0.5"></label>
+        </div>
+        <div class="row">
+          <label>Power (%)<input id="pPower" type="number" min="0" max="100" step="1"></label>
+          <label>Speed (mm/min)<input id="pSpeed" type="number" min="10" step="50"></label>
+        </div>
+        <div class="row">
+          <label>Passes<input id="pPasses" type="number" min="1" max="50" step="1"></label>
+          <label id="intervalWrap">Fill interval (mm)<input id="pInterval" type="number" min="0.03" step="0.01"></label>
+        </div>
+        <div id="sizeInfo" class="muted"></div>
+        <div class="row">
+          <button id="centerBtn">Center on bed</button>
+          <button id="deleteBtn" class="danger">Delete</button>
+        </div>
+      </section>
+
+      <section id="projSection" hidden>
+        <h2 id="projTitle">Imported design</h2>
+        <div class="row">
+          <label>X (mm)<input id="jX" type="number" step="0.5"></label>
+          <label>Y (mm)<input id="jY" type="number" step="0.5"></label>
+        </div>
+        <div id="projSize" class="muted"></div>
+        <div id="layerList"></div>
+        <div id="projNote" class="muted"></div>
+        <div class="row">
+          <button id="projCenterBtn">Center on bed</button>
+          <button id="projDeleteBtn" class="danger">Delete</button>
+        </div>
+      </section>
+    </aside>
+
+    <section class="stage">
+      <canvas id="canvas"></canvas>
+      <div id="dropHint" class="drop-hint" hidden>Drop LightBurn file to import</div>
+      <div class="stage-hint muted">Drag designs to move them · Drop .lbrn2 files here · Green + = your origin · Red ● = laser head</div>
+    </section>
+
+    <aside class="panel">
+      <section>
+        <h2>Move</h2>
+        <div class="jog">
+          <span></span><button data-jog="0,1" title="Y+">▲</button><span></span>
+          <button data-jog="-1,0" title="X−">◀</button>
+          <button id="gotoOriginBtn" class="small" title="Go to origin">⌂ 0,0</button>
+          <button data-jog="1,0" title="X+">▶</button>
+          <span></span><button data-jog="0,-1" title="Y−">▼</button><span></span>
+        </div>
+        <div class="row">
+          <label>Step (mm)
+            <select id="jogStep">
+              <option>0.1</option><option>1</option><option selected>10</option><option>50</option><option>100</option>
+            </select>
+          </label>
+          <label>Speed (mm/min)<input id="jogFeed" type="number" value="3000" min="100" step="100"></label>
+        </div>
+        <div class="btngrid">
+          <button id="homeBtn">Home</button>
+          <button id="unlockBtn">Unlock</button>
+          <button id="setOriginBtn" class="accent">Set origin here</button>
+          <button id="clearOriginBtn">Clear origin</button>
+        </div>
+        <button id="fireBtn" class="fire wide">Hold to fire (focus)</button>
+      </section>
+
+      <section>
+        <h2>Job</h2>
+        <label>Start from
+          <select id="startFrom">
+            <option value="origin">Origin (0,0) – use design X/Y</option>
+            <option value="current">Current laser position</option>
+          </select>
+        </label>
+        <div class="btngrid">
+          <button id="frameBtn">Frame</button>
+          <button id="saveBtn">Save G-code</button>
+        </div>
+        <button id="startBtn" class="primary wide big">Start</button>
+        <div class="btngrid">
+          <button id="pauseBtn">Pause</button>
+          <button id="stopBtn" class="danger">STOP</button>
+        </div>
+        <progress id="progress" value="0" max="1"></progress>
+        <div id="jobInfo" class="muted"></div>
+      </section>
+
+      <section class="console">
+        <h2>Console</h2>
+        <pre id="log"></pre>
+        <form id="cmdForm" class="row">
+          <input id="cmdInput" placeholder="G-code or $ command" autocomplete="off" spellcheck="false">
+          <button type="submit">Send</button>
+        </form>
+      </section>
+    </aside>
+  </main>
+
+  <dialog id="portDialog">
+    <h3>Choose your laser's USB port</h3>
+    <p class="muted" id="portHint">Usually named “usbserial”, “usbmodem” or “wchusbserial”.</p>
+    <select id="portList" size="6"></select>
+    <div class="row end">
+      <button id="portCancel">Cancel</button>
+      <button id="portOk" class="primary">Connect</button>
+    </div>
+  </dialog>
+
+  <dialog id="profileDialog">
+    <h3>My laser</h3>
+    <form id="profileForm">
+      <label>Name<input name="name" required></label>
+      <div class="row">
+        <label>Bed width X (mm)<input name="bedW" type="number" min="10" step="1" required></label>
+        <label>Bed height Y (mm)<input name="bedH" type="number" min="10" step="1" required></label>
+      </div>
+      <div class="row">
+        <label>Max power S value ($30)<input name="maxS" type="number" min="1" step="1" required></label>
+        <label>Baud rate
+          <select name="baud">
+            <option>115200</option><option>250000</option><option>230400</option><option>57600</option><option>9600</option>
+          </select>
+        </label>
+      </div>
+      <div class="row">
+        <label>Fire / focus power (%)<input name="firePower" type="number" min="0.1" max="5" step="0.1" required></label>
+        <label>Frame speed (mm/min)<input name="frameSpeed" type="number" min="100" step="100" required></label>
+      </div>
+      <p class="muted">Tip: connect first, then press “Read from laser” to fill bed size and max power automatically.</p>
+      <div class="row end">
+        <button type="button" id="profileRead">Read from laser</button>
+        <button type="button" id="profileNew">New laser</button>
+        <button type="button" id="profileDelete" class="danger">Delete</button>
+        <span class="spacer"></span>
+        <button type="button" id="profileCancel">Cancel</button>
+        <button type="submit" class="primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="vendor/opentype.min.js"></script>
+  <script src="grbl.js"></script>
+  <script src="geometry.js"></script>
+  <script src="lightburn.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
