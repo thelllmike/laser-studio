@@ -1368,7 +1368,8 @@ function jobShift(objs) {
 /** The rectangle Frame will trace, as drawn on the canvas (before moving it to the laser head). */
 function frameRect() {
   const what = $('frameWhat').value;
-  if (what === 'area') return areaRect();
+  // The card: frame exactly the design area. With the area switched off, fall back to the selection.
+  if (what === 'area' && areaRect()) return areaRect();
   const burnable = (o) => o.geom && (o.type === 'project' ? o.parts.some((p) => p.cut.enabled) : o.geom.polys?.length);
   const sel = objects.filter((o) => selection.has(o.id) && burnable(o));
   return objsBBox(what === 'sel' && sel.length ? sel : objects.filter(burnable));
@@ -1434,7 +1435,7 @@ $('frameBtn').onclick = async () => {
   if (!ready()) return;
   for (const o of objects) { try { await ensureGeom(o); } catch {} }
   const r = frameRect();
-  if (!r) return alert($('frameWhat').value === 'area' ? 'Turn on the design area first.' : 'Add some text first.');
+  if (!r) return alert('Nothing to frame – add a design or turn on the design area.');
   // Same placement as the burn, so the frame shows exactly where the job will go.
   const burn = jobObjects();
   const { sx, sy } = jobShift(burn.length ? burn : objects.filter((o) => o.geom));
@@ -1797,9 +1798,9 @@ $('xfFlipV').onclick = () => transformSelection([1, 0, 0, -1]);
   const o = document.querySelector(`input[name=jobOrigin][value="${saved.origin || 'c'}"]`);
   if (o) o.checked = true;
   $('selOnly').checked = !!saved.selOnly;
-  if (saved.frameWhat) $('frameWhat').value = saved.frameWhat;
+  if (saved.frameTarget) $('frameWhat').value = saved.frameTarget;
   const save = () => {
-    store('ls.job', { startFrom: $('startFrom').value, selOnly: $('selOnly').checked, frameWhat: $('frameWhat').value,
+    store('ls.job', { startFrom: $('startFrom').value, selOnly: $('selOnly').checked, frameTarget: $('frameWhat').value,
       origin: document.querySelector('input[name=jobOrigin]:checked')?.value });
     renderJobOrigin();
     draw();
