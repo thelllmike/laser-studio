@@ -195,24 +195,48 @@ const Geometry = (() => {
   const f = (n) => (Math.abs(n) < 0.0005 ? '0' : n.toFixed(3).replace(/\.?0+$/, ''));
 
   /**
+   * Scanning offset: how far (mm) a bidirectional scan line lands from where it should at a given speed.
+   * rows: [{ speed, shift, initial }]. Linear between rows, proportional to speed below the first row,
+   * held at the last row above it.
+   */
+  function scanShift(rows, speed) {
+    const pts = (rows || []).filter((r) => r.speed > 0).sort((a, b) => a.speed - b.speed);
+    if (!pts.length) return 0;
+    const total = (r) => (r.shift || 0) + (r.initial || 0);
+    if (speed <= pts[0].speed) return (total(pts[0]) * speed) / pts[0].speed;
+    for (let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1], b = pts[i];
+      if (speed <= b.speed) return total(a) + ((total(b) - total(a)) * (speed - a.speed)) / (b.speed - a.speed);
+    }
+    return total(pts[pts.length - 1]);
+  }
+
+  /**
    * Build a G-code job.
-   * items: [{ polys (absolute mm), mode, interval, power (%), speed, passes }]
+   * items: [{ polys (absolute mm), mode, interval, power (%), minPower (%), speed, passes, air }]
+   * opts: { maxS, scanOffset: { enabled, rows }, airCmd }
    * Uses M4 dynamic laser power (GRBL laser mode $32=1): laser is off during G0 moves.
    */
-  function buildGcode(items, { maxS }) {
+  function buildGcode(items, { maxS, scanOffset, airCmd = 'M8' }) {
     const out = ['; Laser Studio job', 'G21 ; mm', 'G90 ; absolute', 'M5', 'M4 S0'];
+    const pct = (p) => Math.max(0, Math.min(100, p || 0)) / 100;
     for (const it of items) {
-      const s = Math.round((Math.max(0, Math.min(100, it.power)) / 100) * maxS);
+      const s = Math.round(pct(it.power) * maxS);
+      const minS = Math.min(s, Math.round(pct(it.minPower) * maxS));
       const feed = Math.round(it.speed);
+      // Each scan direction is moved back by half the measured shift, so forward and reverse lines meet.
+      const half = scanOffset?.enabled ? scanShift(scanOffset.rows, feed) / 2 : 0;
+      if (it.air) out.push(`${airCmd} ; air assist on`);
       for (let pass = 1; pass <= it.passes; pass++) {
         out.push(`; ${it.label} – ${it.mode}, pass ${pass}/${it.passes}`);
         if (it.mode === 'image') {
-          for (const im of it.images) rasterGcode(out, rasterize(im, it.interval, it.dither), s, feed);
+          for (const im of it.images) rasterGcode(out, rasterize(im, it.interval, it.dither), minS, s, feed, half);
         } else if (it.mode === 'fill') {
           for (const row of hatch(it.polys, it.interval)) {
             for (const [x1, x2] of row.segs) {
-              out.push(`G0 X${f(x1)} Y${f(row.y)}`);
-              out.push(`G1 X${f(x2)} S${s} F${feed}`);
+              const d = Math.sign(x2 - x1) * half;
+              out.push(`G0 X${f(x1 - d)} Y${f(row.y)}`);
+              out.push(`G1 X${f(x2 - d)} S${s} F${feed}`);
             }
           }
         } else {
@@ -223,13 +247,15 @@ const Geometry = (() => {
           }
         }
       }
+      if (it.air) out.push('M9 ; air assist off');
     }
     out.push('M5 ; laser off', 'G0 S0');
     return out;
   }
 
   // Zig-zag raster: one G0 to the start of each burn run, one G1 across it.
-  function rasterGcode(out, ras, maxPowerS, feed) {
+  // Grey levels map onto minS…maxS; `half` is the scanning-offset correction for this speed.
+  function rasterGcode(out, ras, minS, maxS, feed, half = 0) {
     const { cols, rows, interval, level } = ras;
     let forward = true;
     for (let r = 0; r < rows; r++) {
@@ -245,13 +271,14 @@ const Geometry = (() => {
       }
       if (!runs.length) continue;
       const y = ras.maxY - (r + 0.5) * interval;
+      const d = forward ? half : -half;
       if (!forward) runs.reverse();
       let first = true;
       for (const [c0, c1, q] of runs) {
-        const xa = ras.minX + (forward ? c0 : c1) * interval;
-        const xb = ras.minX + (forward ? c1 : c0) * interval;
+        const xa = ras.minX + (forward ? c0 : c1) * interval - d;
+        const xb = ras.minX + (forward ? c1 : c0) * interval - d;
         out.push(first ? `G0 X${f(xa)} Y${f(y)}` : `G0 X${f(xa)}`);
-        out.push(`G1 X${f(xb)} S${Math.round((q / 100) * maxPowerS)}${first ? ` F${feed}` : ''}`);
+        out.push(`G1 X${f(xb)} S${Math.round(minS + (q / 100) * (maxS - minS))}${first ? ` F${feed}` : ''}`);
         first = false;
       }
       forward = !forward;
@@ -270,5 +297,5 @@ const Geometry = (() => {
     ];
   }
 
-  return { textToPolylines, bbox, hatch, buildGcode, frameGcode, mat, imageCorners, rasterize };
+  return { textToPolylines, bbox, hatch, buildGcode, frameGcode, mat, imageCorners, rasterize, scanShift };
 })();

@@ -209,13 +209,22 @@ const LightBurn = (() => {
     }
     pctx.putImageData(out, 0, 0);
 
-    // Pixel (u, v) -> local shape coords (centred, Y up) -> world mm.
+    // Pixel (u, v) -> local shape coords (centred) -> world mm.
+    // LightBurn's bitmap XForm already carries the image's Y flip, so pixel row 0 sits at local -h/2.
     const w = shape.w || bw, h = shape.h || bh;
-    const pixToLocal = [w / bw, 0, 0, -h / bh, -w / 2, h / 2];
+    const pixToLocal = [w / bw, 0, 0, h / bh, -w / 2, -h / 2];
     return { gray, bw, bh, preview: pv, m: mul(shape.m, pixToLocal) };
   }
 
   const MODE = { Cut: 'line', Scan: 'fill', Offset: 'fill', Image: 'image' };
+
+  // LightBurn's layer palette (C00…C29).
+  const PALETTE = [
+    '#000000', '#0000ff', '#ff0000', '#00e000', '#d0d000', '#ff8000', '#00e0e0', '#ff00ff', '#b4b4b4', '#0000a0',
+    '#a00000', '#00a000', '#a0a000', '#c08000', '#00a0ff', '#a000a0', '#808080', '#7d87b9', '#bb7784', '#4a6fe3',
+    '#d33f6a', '#8cd78c', '#8d8cff', '#e7d58a', '#e0a8b8', '#f0b98d', '#bf6cd8', '#0f80b9', '#2fe6a5', '#9c6644',
+  ];
+  const layerColor = (i) => PALETTE[((i % PALETTE.length) + PALETTE.length) % PALETTE.length];
 
   /** Parse + decode a LightBurn file into a Laser Studio project object. */
   async function load(xmlText, name) {
@@ -229,7 +238,12 @@ const LightBurn = (() => {
           key,
           name: cs.name || `C${String(s.cutIndex).padStart(2, '0')}`,
           mode: MODE[cs.type] || 'line',
+          index: s.cutIndex,
+          color: layerColor(s.cutIndex),
           power: Number.isFinite(cs.maxPower) ? cs.maxPower : 50,
+          minPower: Number.isFinite(cs.minPower) ? cs.minPower : 0,
+          air: cs.runBlower !== 0, // LightBurn leaves air assist on unless the file turns it off
+          shown: cs.hide !== 1,
           speed: Math.round((Number.isFinite(cs.speed) ? cs.speed : 50) * 60), // LightBurn stores mm/s
           passes: Math.max(1, cs.numPasses || 1),
           interval: cs.interval > 0 ? cs.interval : 0.1,
@@ -270,5 +284,5 @@ const LightBurn = (() => {
     };
   }
 
-  return { load, parse };
+  return { load, parse, layerColor };
 })();

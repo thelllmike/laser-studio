@@ -1,7 +1,7 @@
 {
   "name": "laser-studio",
   "productName": "Laser Studio",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Simple GRBL diode laser control: jog, set origin, add text, frame and burn.",
   "main": "main.js",
   "author": "Sachin",

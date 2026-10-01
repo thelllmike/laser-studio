@@ -16,11 +16,16 @@ function store(key, value) {
 
 const DEFAULT_PROFILE = {
   name: 'My Diode Laser', bedW: 400, bedH: 400, maxS: 1000, baud: 115200, firePower: 1, frameSpeed: 3000,
+  scanOffset: { enabled: false, rows: [] }, airCmd: 'M8',
 };
 let profiles = load('ls.profiles', null);
 if (!Array.isArray(profiles) || !profiles.length) profiles = [{ id: uid(), ...DEFAULT_PROFILE }];
 let profileId = load('ls.profileId', profiles[0].id);
 const profile = () => profiles.find((p) => p.id === profileId) || profiles[0];
+const gcodeOpts = () => {
+  const p = profile();
+  return { maxS: grbl.settings['30'] || p.maxS, scanOffset: p.scanOffset, airCmd: p.airCmd || 'M8' };
+};
 
 function saveProfiles() {
   store('ls.profiles', profiles);
@@ -218,42 +223,89 @@ function renderProject(o) {
   if (propsFor !== o.id || document.activeElement !== $('jY')) $('jY').value = o.y;
   $('projSize').textContent = projSizeText(o);
   $('projNote').textContent = o.skipped.length ? `Not imported: ${o.skipped.join(', ')}` : '';
-  if (propsFor === o.id && $('layerList').contains(document.activeElement)) return;
+  if (!o.layers.some((l) => l.key === o.selLayer)) o.selLayer = o.layers[0]?.key;
+  const switched = propsFor !== o.id;
   propsFor = o.id;
+  renderCuts(o);
+  if (switched || !$('cutEditor').contains(document.activeElement)) renderCutEditor(o);
+}
 
-  const list = $('layerList');
-  list.innerHTML = '';
+function h(tag, props = {}, ...kids) {
+  const n = Object.assign(document.createElement(tag), props);
+  n.append(...kids);
+  return n;
+}
+const spdPwr = (l) => `${Math.round(l.speed).toLocaleString()} / ${Math.round(l.power)}`;
+
+function renderCuts(o) {
+  const body = $('cutsBody');
+  body.innerHTML = '';
   for (const l of o.layers) {
-    const div = document.createElement('div');
-    div.className = 'layer' + (l.enabled ? '' : ' off');
-    div.style.setProperty('--sw', l.mode === 'image' ? '#fdba74' : l.mode === 'fill' ? '#f59e0b' : '#60a5fa');
-    const count = l.mode === 'image' ? `${l.images.length} image${l.images.length > 1 ? 's' : ''}` : `${l.polys.length} paths`;
-    div.innerHTML = `
-      <div class="layer-head"><input type="checkbox" data-k="enabled" ${l.enabled ? 'checked' : ''} title="Burn this layer">
-        ${l.name} · ${MODE_LABEL[l.mode]}<small>${count}</small></div>
-      <div class="row">
-        <label>Power %<input type="number" data-k="power" min="0" max="100" step="1" value="${l.power}"></label>
-        <label>Speed mm/min<input type="number" data-k="speed" min="10" step="50" value="${l.speed}"></label>
-        <label>Passes<input type="number" data-k="passes" min="1" max="50" step="1" value="${l.passes}"></label>
-      </div>
-      ${l.mode === 'line' ? '' : `<div class="row">
-        <label>Interval mm<input type="number" data-k="interval" min="0.03" step="0.01" value="${l.interval}"></label>
-        ${l.mode === 'image' ? `<label>Dither<select data-k="dither">${DITHERS.map((d) => `<option ${d === l.dither ? 'selected' : ''}>${d}</option>`).join('')}</select></label>` : ''}
-      </div>`}`;
-    div.addEventListener('input', (e) => {
-      const k = e.target.dataset.k;
-      if (!k) return;
-      if (k === 'enabled') { l.enabled = e.target.checked; div.classList.toggle('off', !l.enabled); draw(); return; }
-      if (k === 'dither') { l.dither = e.target.value; return; }
-      const v = parseFloat(e.target.value);
-      if (!Number.isFinite(v)) return;
-      if (k === 'power') l.power = Math.max(0, Math.min(100, v));
-      else if (k === 'passes') l.passes = Math.max(1, Math.round(v));
-      else if (k === 'interval') { if (v >= 0.02) l.interval = v; }
-      else if (k === 'speed') { if (v > 0) l.speed = v; }
-    });
-    list.append(div);
+    const tr = h('tr', { className: (l.key === o.selLayer ? 'sel' : '') + (l.enabled ? '' : ' off') });
+    const chip = h('span', { className: 'chip', textContent: String(l.index ?? '').padStart(2, '0'), title: l.name });
+    chip.style.background = l.color || '#60a5fa';
+    chip.style.color = textOn(l.color || '#60a5fa');
+
+    let mode;
+    if (l.mode === 'image') mode = document.createTextNode('Image');
+    else {
+      mode = h('select');
+      for (const m of ['line', 'fill']) mode.add(new Option(MODE_LABEL[m], m, false, m === l.mode));
+      mode.onchange = () => { l.mode = mode.value; renderCutEditor(o); draw(); };
+    }
+    const toggle = (key, title) => {
+      const cb = h('input', { type: 'checkbox', className: 'switch', checked: l[key], title });
+      cb.onchange = () => { l[key] = cb.checked; tr.classList.toggle('off', !l.enabled); draw(); };
+      return h('td', { className: 'tog' }, cb);
+    };
+    tr.append(
+      h('td', {}, chip), h('td', {}, mode), h('td', { className: 'spdpwr', textContent: spdPwr(l) }),
+      toggle('enabled', 'Burn this layer'), toggle('shown', 'Show on screen'), toggle('air', 'Air assist'),
+    );
+    tr.onclick = (e) => {
+      if (e.target.closest('input, select') || o.selLayer === l.key) return;
+      o.selLayer = l.key;
+      renderCuts(o);
+      renderCutEditor(o);
+    };
+    body.append(tr);
   }
+}
+
+function renderCutEditor(o) {
+  const l = o.layers.find((x) => x.key === o.selLayer);
+  $('cutEditor').hidden = !l;
+  if (!l) return;
+  for (const inp of $('cutEditor').querySelectorAll('[data-k]')) {
+    if (inp.dataset.k !== 'dither') inp.value = l[inp.dataset.k];
+  }
+  const dither = $('cutEditor').querySelector('[data-k=dither]');
+  dither.innerHTML = '';
+  for (const d of DITHERS) dither.add(new Option(d, d, false, d === l.dither));
+  $('cutFillRow').hidden = l.mode === 'line';
+  $('cutDitherWrap').style.visibility = l.mode === 'image' ? 'visible' : 'hidden';
+}
+
+$('cutEditor').addEventListener('input', (e) => {
+  const o = selected();
+  const l = o?.layers?.find((x) => x.key === o.selLayer);
+  const k = e.target.dataset.k;
+  if (!l || !k) return;
+  if (k === 'dither') { l.dither = e.target.value; return; }
+  const v = parseFloat(e.target.value);
+  if (!Number.isFinite(v)) return;
+  if (k === 'power' || k === 'minPower') l[k] = Math.max(0, Math.min(100, v));
+  else if (k === 'passes') l.passes = Math.max(1, Math.round(v));
+  else if (k === 'interval') { if (v >= 0.02) l.interval = v; }
+  else if (k === 'speed') { if (v > 0) l.speed = v; }
+  const cell = $('cutsBody').querySelector('tr.sel .spdpwr');
+  if (cell) cell.textContent = spdPwr(l);
+});
+
+// Black or white text, whichever reads better on a layer colour.
+function textOn(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  return 0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255) > 140 ? '#000' : '#fff';
 }
 
 async function importFiles(files) {
@@ -425,7 +477,10 @@ function drawProject(o, v, wco) {
   const dx = o.x + wco.x, dy = o.y + wco.y;
   const order = { image: 0, fill: 1, line: 2 };
   for (const l of [...o.layers].sort((a, b) => order[a.mode] - order[b.mode])) {
+    if (l.shown === false) continue;
     ctx.globalAlpha = l.enabled ? 1 : 0.25;
+    // The bed is dark, so LightBurn's black layer (C00) is drawn light.
+    const color = !l.color || l.color === '#000000' ? '#d1d5db' : l.color;
     if (l.mode === 'image' || l.images.length) {
       const base = [v.s, 0, 0, -v.s, v.ox + dx * v.s, v.oy - dy * v.s];
       for (const im of l.images) {
@@ -437,8 +492,8 @@ function drawProject(o, v, wco) {
     }
     if (l.polys.length) {
       tracePolys(l.polys, v, dx, dy);
-      if (l.mode === 'fill') { ctx.fillStyle = LAYER_COLORS.fill; ctx.fill('evenodd'); }
-      else { ctx.strokeStyle = LAYER_COLORS.line; ctx.lineWidth = 1; ctx.stroke(); }
+      if (l.mode === 'fill') { ctx.fillStyle = color; ctx.globalAlpha *= 0.85; ctx.fill('evenodd'); }
+      else { ctx.strokeStyle = color; ctx.lineWidth = 1; ctx.stroke(); }
     }
   }
   ctx.globalAlpha = 1;
@@ -677,7 +732,7 @@ async function jobItems() {
         if (!l.enabled) continue;
         out.push({
           label: `${o.name} ${l.name}`, mode: l.mode, interval: l.interval, dither: l.dither,
-          power: l.power, speed: l.speed, passes: l.passes, polys: move(l.polys),
+          power: l.power, minPower: l.minPower, air: l.air, speed: l.speed, passes: l.passes, polys: move(l.polys),
           images: l.images.map((im) => ({ ...im, m: Geometry.mat.mul(Geometry.mat.translate(dx, dy), im.m) })),
         });
       }
@@ -723,8 +778,7 @@ $('frameBtn').onclick = async () => {
 $('saveBtn').onclick = async () => {
   const items = await jobItems();
   if (!items.length) return alert('Add some text first.');
-  const maxS = grbl.settings['30'] || profile().maxS;
-  const saved = await window.native.saveGcode(Geometry.buildGcode(items, { maxS }).join('\n') + '\n');
+  const saved = await window.native.saveGcode(Geometry.buildGcode(items, gcodeOpts()).join('\n') + '\n');
   if (saved) log(`Saved ${saved}`);
 };
 
@@ -739,10 +793,9 @@ $('startBtn').onclick = async () => {
     try { await grbl.send('$32=1'); } catch (e) { return log(e.message, 'err'); }
   }
 
-  const maxS = grbl.settings['30'] || profile().maxS;
   $('jobInfo').textContent = 'Preparing…';
   await new Promise((r) => setTimeout(r, 30));
-  const lines = Geometry.buildGcode(items, { maxS }).map((l) => l.replace(/;.*$/, '').trim()).filter(Boolean);
+  const lines = Geometry.buildGcode(items, gcodeOpts()).map((l) => l.replace(/;.*$/, '').trim()).filter(Boolean);
   job = { total: lines.length, done: 0, start: Date.now() };
   setEnabled();
   log(`Job started – ${lines.length} lines.`);
@@ -804,9 +857,42 @@ const pForm = $('profileForm');
 function openProfileDialog(p) {
   for (const k of ['name', 'bedW', 'bedH', 'maxS', 'baud', 'firePower', 'frameSpeed']) pForm.elements[k].value = p[k];
   pForm.dataset.id = p.id || '';
+  const so = p.scanOffset || { enabled: false, rows: [] };
+  pForm.elements.scanEnabled.checked = !!so.enabled;
+  $('scanRows').innerHTML = '';
+  for (const r of so.rows) addScanRow(r);
+  if (!so.rows.length) addScanRow();
+  pForm.elements.airCmd.value = p.airCmd || 'M8';
   $('profileDelete').disabled = !p.id || profiles.length < 2;
   $('profileDialog').showModal();
 }
+function addScanRow(r = { speed: '', shift: '', initial: 0 }) {
+  const tr = document.createElement('tr');
+  for (const [k, step] of [['speed', 100], ['shift', 0.01], ['initial', 0.01]]) {
+    const inp = Object.assign(document.createElement('input'), { type: 'number', step, value: r[k] });
+    inp.dataset.k = k;
+    if (k === 'speed') inp.min = 1;
+    const td = document.createElement('td');
+    td.append(inp);
+    tr.append(td);
+  }
+  const del = Object.assign(document.createElement('button'), { type: 'button', className: 'small', textContent: '✕', title: 'Remove' });
+  del.onclick = () => tr.remove();
+  const td = document.createElement('td');
+  td.append(del);
+  tr.append(td);
+  $('scanRows').append(tr);
+}
+$('scanAdd').onclick = () => addScanRow();
+
+function readScanRows() {
+  return [...$('scanRows').rows]
+    .map((tr) => Object.fromEntries([...tr.querySelectorAll('input')].map((i) => [i.dataset.k, parseFloat(i.value)])))
+    .filter((r) => r.speed > 0 && Number.isFinite(r.shift))
+    .map((r) => ({ speed: r.speed, shift: r.shift, initial: Number.isFinite(r.initial) ? r.initial : 0 }))
+    .sort((a, b) => a.speed - b.speed);
+}
+
 $('editProfileBtn').onclick = () => openProfileDialog(profile());
 $('profileNew').onclick = () => openProfileDialog({ ...DEFAULT_PROFILE, name: 'New laser' });
 $('profileCancel').onclick = () => $('profileDialog').close();
@@ -832,6 +918,8 @@ pForm.addEventListener('submit', (e) => {
     name: el.name.value.trim() || 'Laser',
     bedW: Number(el.bedW.value), bedH: Number(el.bedH.value), maxS: Number(el.maxS.value),
     baud: Number(el.baud.value), firePower: Number(el.firePower.value), frameSpeed: Number(el.frameSpeed.value),
+    scanOffset: { enabled: el.scanEnabled.checked, rows: readScanRows() },
+    airCmd: el.airCmd.value || 'M8',
   };
   const existing = profiles.find((p) => p.id === pForm.dataset.id);
   if (existing) Object.assign(existing, data);
