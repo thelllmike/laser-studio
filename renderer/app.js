@@ -809,6 +809,29 @@ function draw() {
     }
   }
 
+  // job origin: the point that will sit under the laser when starting from the current position
+  if ($('startFrom').value === 'current') {
+    const objs = jobObjects();
+    const box = objs.length || areaRect() ? jobRefBox(objs) : null;
+    if (box) {
+      const a = jobAnchor(box);
+      const [jx, jy] = v.toPx(a.x + wco.x, a.y + wco.y);
+      ctx.strokeStyle = '#f59e0b';
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(jx, jy, 7, 0, Math.PI * 2); ctx.stroke();
+      line(jx - 12, jy, jx + 12, jy);
+      line(jx, jy - 12, jx, jy + 12);
+      ctx.font = '11px -apple-system, sans-serif';
+      ctx.textAlign = 'left';
+      const label = 'Laser starts here';
+      const tw = ctx.measureText(label).width + 10;
+      ctx.fillStyle = 'rgba(17,24,39,.9)';
+      ctx.fillRect(jx + 12, jy - 24, tw, 17);
+      ctx.fillStyle = '#fbbf24';
+      ctx.fillText(label, jx + 17, jy - 12);
+    }
+  }
+
   // work origin
   const [ox, oy] = v.toPx(wco.x, wco.y);
   ctx.strokeStyle = '#22c55e';
@@ -1280,22 +1303,50 @@ window.addEventListener('blur', fireOff);
 
 // ---------------------------------------------------------------- jobs
 
+// ---- where the job starts
+
+const ORIGIN_NAMES = { tl: 'top left', t: 'top middle', tr: 'top right', l: 'middle left', c: 'middle',
+  r: 'middle right', bl: 'bottom left', b: 'bottom middle', br: 'bottom right' };
+
+/** Objects the job will burn: everything, or only the selection when "Burn selected items only" is on. */
+function jobObjects() {
+  const sel = $('selOnly').checked && selection.size ? objects.filter((o) => selection.has(o.id)) : objects;
+  return sel.filter((o) => o.geom && (o.type === 'project' ? o.parts.some((p) => p.cut.enabled) : o.geom.polys?.length));
+}
+
+/** The box the job origin refers to: the design area (your card) when it's on, otherwise the design itself. */
+function jobRefBox(objs) {
+  return areaRect() || objsBBox(objs);
+}
+
+/** The job-origin point (work mm) on that box. */
+function jobAnchor(box) {
+  const k = document.querySelector('input[name=jobOrigin]:checked')?.value || 'bl';
+  const x = k.endsWith('l') ? box.minX : k.endsWith('r') ? box.maxX : (box.minX + box.maxX) / 2;
+  const y = k.startsWith('t') ? box.maxY : k.startsWith('b') ? box.minY : (box.minY + box.maxY) / 2;
+  return { x, y, name: ORIGIN_NAMES[k] };
+}
+
+function renderJobOrigin() {
+  const current = $('startFrom').value === 'current';
+  $('jobOriginRow').classList.toggle('off', !current);
+  const a = areaRect() ? 'design area' : 'design';
+  const k = document.querySelector('input[name=jobOrigin]:checked')?.value || 'bl';
+  $('jobOriginText').textContent = current ? `${ORIGIN_NAMES[k]} of the ${a}` : 'Not used – design burns at its X/Y';
+}
+
 async function jobItems() {
-  const items = [];
-  for (const o of objects) {
-    try { await ensureGeom(o); } catch { continue; }
-    if (o.type === 'project' ? o.parts.some((p) => p.cut.enabled) : o.geom?.polys.length) items.push(o);
-  }
+  for (const o of objects) { try { await ensureGeom(o); } catch {} }
+  const items = jobObjects();
   if (!items.length) return [];
 
   let sx = 0, sy = 0;
   if ($('startFrom').value === 'current') {
-    // Put the design's bottom-left corner at the laser head.
-    const minX = Math.min(...items.map((o) => o.x));
-    const minY = Math.min(...items.map((o) => o.y));
+    // Put the chosen job-origin point (e.g. the middle of the card) under the laser head.
+    const a = jobAnchor(jobRefBox(items));
     const pos = grbl.connected ? grbl.status.wpos : { x: 0, y: 0 };
-    sx = pos.x - minX;
-    sy = pos.y - minY;
+    sx = pos.x - a.x;
+    sy = pos.y - a.y;
   }
   const out = [];
   const byCut = new Map();
@@ -1662,7 +1713,7 @@ function renderArea() {
   $('areaOn').checked = area.on;
   $('areaOn').closest('.area-box').classList.toggle('off', !area.on);
 }
-$('areaOn').onchange = () => { area.on = $('areaOn').checked; saveArea(); renderArea(); draw(); };
+$('areaOn').onchange = () => { area.on = $('areaOn').checked; saveArea(); renderArea(); renderJobOrigin(); draw(); };
 for (const [id, k] of [['areaW', 'w'], ['areaH', 'h'], ['areaX', 'x'], ['areaY', 'y']]) {
   $(id).addEventListener('input', () => {
     const v = parseFloat($(id).value);
@@ -1700,6 +1751,23 @@ $('xfRotR').onclick = () => transformSelection(rotM(-90), -90);
 $('xfFlipH').onclick = () => transformSelection([-1, 0, 0, 1]);
 $('xfFlipV').onclick = () => transformSelection([1, 0, 0, -1]);
 
+{
+  const saved = load('ls.job', {});
+  if (saved.startFrom) $('startFrom').value = saved.startFrom;
+  const o = document.querySelector(`input[name=jobOrigin][value="${saved.origin || 'c'}"]`);
+  if (o) o.checked = true;
+  $('selOnly').checked = !!saved.selOnly;
+  const save = () => {
+    store('ls.job', { startFrom: $('startFrom').value, selOnly: $('selOnly').checked,
+      origin: document.querySelector('input[name=jobOrigin]:checked')?.value });
+    renderJobOrigin();
+    draw();
+  };
+  $('startFrom').addEventListener('change', save);
+  $('selOnly').addEventListener('change', save);
+  for (const r of document.querySelectorAll('input[name=jobOrigin]')) r.addEventListener('change', save);
+}
+
 $('addTextBtn').onclick = addText;
 bindProps();
 renderProfileSelect();
@@ -1707,6 +1775,7 @@ renderPorts();
 refreshPorts();
 renderArea();
 renderZoom();
+renderJobOrigin();
 setEnabled();
 new ResizeObserver(resizeCanvas).observe(canvas);
 loadFonts()

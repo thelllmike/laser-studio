@@ -187,6 +187,25 @@
             <option value="current">Current laser position</option>
           </select>
         </label>
+        <div id="jobOriginRow" class="job-origin-row">
+          <div>
+            <div class="muted">Job origin – this point goes under the laser</div>
+            <div id="jobOriginText" class="job-origin-text"></div>
+          </div>
+          <div class="origin-grid">
+            <label title="Top left"><input type="radio" name="jobOrigin" value="tl"><span></span></label>
+            <label title="Top middle"><input type="radio" name="jobOrigin" value="t"><span></span></label>
+            <label title="Top right"><input type="radio" name="jobOrigin" value="tr"><span></span></label>
+            <label title="Middle left"><input type="radio" name="jobOrigin" value="l"><span></span></label>
+            <label title="Middle"><input type="radio" name="jobOrigin" value="c"><span></span></label>
+            <label title="Middle right"><input type="radio" name="jobOrigin" value="r"><span></span></label>
+            <label title="Bottom left"><input type="radio" name="jobOrigin" value="bl"><span></span></label>
+            <label title="Bottom middle"><input type="radio" name="jobOrigin" value="b"><span></span></label>
+            <label title="Bottom right"><input type="radio" name="jobOrigin" value="br"><span></span></label>
+          </div>
+        </div>
+        <label class="check small-check" title="Frame and Start use only the selected items">
+          <input type="checkbox" class="switch" id="selOnly"> Burn selected items only</label>
         <div class="btngrid">
           <button id="frameBtn">Frame</button>
           <button id="saveBtn">Save G-code</button>

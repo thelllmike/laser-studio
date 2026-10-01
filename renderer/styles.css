@@ -126,6 +126,15 @@ label.lock { flex: none; margin-bottom: 14px; font-size: 13px; }
 label.lock input { width: auto; }
 .xf-btns { display: flex; gap: 4px; margin-bottom: 8px; }
 .xf-btns button { padding: 6px 7px; font-size: 12px; }
+.job-origin-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin: 2px 0 8px; }
+.job-origin-row.off { opacity: .4; }
+.job-origin-text { font-weight: 600; margin-top: 2px; }
+.origin-grid { display: grid; grid-template-columns: repeat(3, 18px); gap: 4px; padding: 5px; background: #111214;
+  border: 1px solid var(--line); border-radius: 6px; flex: none; }
+.origin-grid label { margin: 0; cursor: pointer; }
+.origin-grid input { display: none; }
+.origin-grid span { display: block; width: 18px; height: 18px; border-radius: 50%; border: 2px solid #4b5058; }
+.origin-grid input:checked + span { background: var(--fire); border-color: var(--fire); }
 .align-bar { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; margin-bottom: 6px; }
 .align-bar button { padding: 5px 0; display: grid; place-items: center; }
 table.cuts { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 8px; }
