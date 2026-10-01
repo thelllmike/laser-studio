@@ -75,6 +75,9 @@ button.small { font-size: 11px; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border: 1px solid transparent; }
 .objlist li.sel { border-color: var(--accent); }
 .objlist li small { color: var(--muted); margin-left: 6px; }
+.objlist { max-height: 260px; overflow-y: auto; }
+.objlist li.file { font-weight: 600; }
+.objlist li.child { margin-left: 14px; padding: 4px 9px; font-size: 12px; }
 
 .muted { color: var(--muted); font-size: 12px; }
 #sizeInfo { margin-bottom: 8px; }
@@ -127,6 +130,7 @@ fieldset { border: 1px solid var(--line); border-radius: var(--radius); padding:
 legend { color: var(--muted); font-size: 12px; padding: 0 4px; }
 label.check { flex-direction: row; align-items: center; gap: 8px; color: var(--text); font-size: 13px; }
 label.check input[type=radio] { width: auto; margin: 0; }
+label.small-check { font-size: 12px; margin: 2px 0 8px; }
 .radios { display: flex; gap: 24px; }
 table.grid { width: 100%; border-collapse: collapse; margin-bottom: 6px; }
 table.grid th { text-align: left; font-weight: 500; font-size: 11px; color: var(--muted); padding: 4px; background: var(--panel-2); }

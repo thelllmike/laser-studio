@@ -285,15 +285,20 @@ const Geometry = (() => {
     }
   }
 
-  /** Bounding-box frame with the laser off. */
-  function frameGcode(bb, feed) {
+  /**
+   * Bounding-box frame. s = 0 keeps the laser off; s > 0 traces it with a faint visible beam (M3 constant power).
+   * The laser is only switched on after the travel move to the first corner.
+   */
+  function frameGcode(bb, feed, s = 0) {
     return [
       'G21', 'G90', 'M5',
       `G0 X${f(bb.minX)} Y${f(bb.minY)}`,
-      `G1 X${f(bb.maxX)} Y${f(bb.minY)} S0 F${feed}`,
+      ...(s > 0 ? [`M3 S${s}`] : []),
+      `G1 X${f(bb.maxX)} Y${f(bb.minY)} S${s} F${feed}`,
       `G1 X${f(bb.maxX)} Y${f(bb.maxY)}`,
       `G1 X${f(bb.minX)} Y${f(bb.maxY)}`,
       `G1 X${f(bb.minX)} Y${f(bb.minY)}`,
+      'M5', 'S0',
     ];
   }
 

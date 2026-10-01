@@ -90,7 +90,9 @@
           </div>
         </div>
         <div id="projNote" class="muted"></div>
-        <div class="row">
+        <p class="muted">Click an item to move it on its own · Shift-click to add more · ⌘A selects everything</p>
+        <button id="projAllBtn" class="wide">Select whole design</button>
+        <div class="row" style="margin-top: 6px">
           <button id="projCenterBtn">Center on bed</button>
           <button id="projDeleteBtn" class="danger">Delete</button>
         </div>
@@ -100,7 +102,7 @@
     <section class="stage">
       <canvas id="canvas"></canvas>
       <div id="dropHint" class="drop-hint" hidden>Drop LightBurn file to import</div>
-      <div class="stage-hint muted">Drag designs to move them · Drop .lbrn2 files here · Green + = your origin · Red ● = laser head</div>
+      <div class="stage-hint muted">Click an item to select it, drag to move · Shift-click for several · Drop .lbrn2 files here · Green + = your origin · Red ● = laser head</div>
     </section>
 
     <aside class="panel">
@@ -142,6 +144,8 @@
           <button id="frameBtn">Frame</button>
           <button id="saveBtn">Save G-code</button>
         </div>
+        <label class="check small-check" title="Trace the frame with a faint visible beam. Power is set under “My laser…”.">
+          <input type="checkbox" class="switch" id="frameLaser"> <span id="frameLaserText">Laser on while framing</span></label>
         <button id="startBtn" class="primary wide big">Start</button>
         <div class="btngrid">
           <button id="pauseBtn">Pause</button>
@@ -191,6 +195,10 @@
       <div class="row">
         <label>Fire / focus power (%)<input name="firePower" type="number" min="0.1" max="5" step="0.1" required></label>
         <label>Frame speed (mm/min)<input name="frameSpeed" type="number" min="100" step="100" required></label>
+      </div>
+      <div class="row">
+        <label>Frame laser power (%)<input name="framePower" type="number" min="0.1" max="5" step="0.1" required></label>
+        <span style="flex: 1"></span>
       </div>
       <fieldset>
         <legend>Scanning offset adjust</legend>

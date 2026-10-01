@@ -15,7 +15,7 @@ function store(key, value) {
 }
 
 const DEFAULT_PROFILE = {
-  name: 'My Diode Laser', bedW: 400, bedH: 400, maxS: 1000, baud: 115200, firePower: 1, frameSpeed: 3000,
+  name: 'My Diode Laser', bedW: 400, bedH: 400, maxS: 1000, baud: 115200, firePower: 1, frameSpeed: 3000, framePower: 1,
   scanOffset: { enabled: false, rows: [] }, airCmd: 'M8',
 };
 let profiles = load('ls.profiles', null);
@@ -31,6 +31,7 @@ function saveProfiles() {
   store('ls.profiles', profiles);
   store('ls.profileId', profileId);
   renderProfileSelect();
+  renderFrameLaser();
   draw();
 }
 
@@ -77,8 +78,33 @@ async function loadFonts() {
 // ---------------------------------------------------------------- design objects
 
 const objects = [];
-let selectedId = null;
+const files = new Map(); // imported LightBurn files: id -> { id, name, cuts, skipped, selCut }
+const selection = new Set();
+let selectedId = null; // the "primary" selected object, whose properties the side panel shows
 const selected = () => objects.find((o) => o.id === selectedId) || null;
+const selectedObjs = () => objects.filter((o) => selection.has(o.id));
+
+function select(ids, { add = false } = {}) {
+  if (!add) selection.clear();
+  for (const id of ids) selection.add(id);
+  selectedId = ids.length ? ids[ids.length - 1] : null;
+}
+function toggleSelect(id) {
+  if (selection.has(id)) selection.delete(id);
+  else selection.add(id);
+  selectedId = selection.has(id) ? id : [...selection].pop() || null;
+}
+
+/** Move objects by (dx, dy) mm. Moves are rounded to 0.1 mm so items keep their exact spacing. */
+function moveBy(objs, dx, dy) {
+  dx = round1(dx); dy = round1(dy);
+  for (const o of objs) { o.x += dx; o.y += dy; }
+}
+
+function objsBBox(objs) {
+  const pts = objs.filter((o) => o.geom).map((o) => [{ x: o.x, y: o.y }, { x: o.x + o.geom.width, y: o.y + o.geom.height }]);
+  return Geometry.bbox(pts);
+}
 
 async function ensureGeom(obj) {
   if (obj.type === 'project') return obj.geom;
@@ -99,7 +125,7 @@ async function addText() {
     mode: 'line', power: 80, speed: 1000, passes: 1, interval: 0.1,
   };
   objects.push(obj);
-  selectedId = obj.id;
+  select([obj.id]);
   await refresh(obj);
   $('pText').focus();
   $('pText').select();
@@ -117,14 +143,27 @@ async function refresh(obj) {
 function renderList() {
   const ul = $('objectList');
   ul.innerHTML = '';
+  let lastFile = null;
   for (const o of objects) {
-    const li = document.createElement('li');
-    li.textContent = o.type === 'project' ? o.name : o.text.replace(/\n/g, ' ') || '(empty)';
-    const small = document.createElement('small');
-    small.textContent = o.type === 'project' ? 'LightBurn' : o.mode === 'fill' ? 'fill' : 'line';
-    li.append(small);
-    if (o.id === selectedId) li.classList.add('sel');
-    li.onclick = () => { selectedId = o.id; refresh(); };
+    if (o.fileId && o.fileId !== lastFile) {
+      const f = files.get(o.fileId);
+      const ids = objects.filter((x) => x.fileId === f.id).map((x) => x.id);
+      const head = h('li', { className: 'file', textContent: f.name, title: 'Select the whole design' },
+        h('small', { textContent: `LightBurn · ${ids.length} items` }));
+      if (ids.every((id) => selection.has(id))) head.classList.add('sel');
+      head.onclick = () => { select(ids); refresh(); };
+      ul.append(head);
+    }
+    lastFile = o.fileId || null;
+    const li = h('li', { textContent: o.type === 'project' ? o.name : o.text.replace(/\n/g, ' ') || '(empty)' },
+      h('small', { textContent: o.type === 'project' ? '' : o.mode === 'fill' ? 'fill' : 'line' }));
+    if (o.fileId) li.classList.add('child');
+    if (selection.has(o.id)) li.classList.add('sel');
+    li.onclick = (e) => {
+      if (e.shiftKey || e.metaKey) toggleSelect(o.id);
+      else select([o.id]);
+      refresh();
+    };
     ul.append(li);
   }
 }
@@ -182,30 +221,41 @@ function bindProps() {
       await refresh(o);
     });
   }
-  $('deleteBtn').onclick = $('projDeleteBtn').onclick = () => {
-    const i = objects.findIndex((o) => o.id === selectedId);
-    if (i >= 0) objects.splice(i, 1);
-    selectedId = objects[objects.length - 1]?.id || null;
-    refresh();
-  };
+  $('deleteBtn').onclick = $('projDeleteBtn').onclick = deleteSelection;
   $('centerBtn').onclick = $('projCenterBtn').onclick = () => {
-    const o = selected();
-    if (!o?.geom) return;
+    const objs = selectedObjs();
+    const bb = objsBBox(objs);
+    if (!bb) return;
     const wco = grbl.status.wco;
-    o.x = round1(profile().bedW / 2 - o.geom.width / 2 - wco.x);
-    o.y = round1(profile().bedH / 2 - o.geom.height / 2 - wco.y);
+    moveBy(objs, profile().bedW / 2 - (bb.minX + bb.maxX) / 2 - wco.x, profile().bedH / 2 - (bb.minY + bb.maxY) / 2 - wco.y);
     refresh();
   };
-  for (const [id, key] of [['jX', 'x'], ['jY', 'y']]) {
+  $('projAllBtn').onclick = () => {
+    const o = selected();
+    if (!o?.fileId) return;
+    select(objects.filter((x) => x.fileId === o.fileId).map((x) => x.id));
+    refresh();
+  };
+  // X/Y show the bottom-left of the selection; typing moves everything selected.
+  for (const [id, axis] of [['jX', 'x'], ['jY', 'y']]) {
     $(id).addEventListener('input', () => {
-      const o = selected();
+      const objs = selectedObjs();
+      const bb = objsBBox(objs);
       const v = parseFloat($(id).value);
-      if (!o || !Number.isFinite(v)) return;
-      o[key] = v;
-      $('projSize').textContent = projSizeText(o);
+      if (!bb || !Number.isFinite(v)) return;
+      if (axis === 'x') moveBy(objs, v - bb.minX, 0);
+      else moveBy(objs, 0, v - bb.minY);
+      $('projSize').textContent = projSizeText(objs);
       draw();
     });
   }
+}
+
+function deleteSelection() {
+  for (let i = objects.length - 1; i >= 0; i--) if (selection.has(objects[i].id)) objects.splice(i, 1);
+  for (const id of files.keys()) if (!objects.some((o) => o.fileId === id)) files.delete(id);
+  select([]);
+  refresh();
 }
 
 // ---------------------------------------------------------------- imported LightBurn projects
@@ -213,21 +263,27 @@ function bindProps() {
 const MODE_LABEL = { line: 'Line', fill: 'Fill', image: 'Image' };
 const DITHERS = ['stucki', 'jarvis', 'floyd', 'atkinson', 'threshold', 'grayscale'];
 
-function projSizeText(o) {
-  return `Size ${o.geom.width.toFixed(1)} × ${o.geom.height.toFixed(1)} mm · at X ${o.x}, Y ${o.y}`;
+function projSizeText(objs) {
+  const bb = objsBBox(objs);
+  if (!bb) return '';
+  const what = objs.length > 1 ? `${objs.length} items · ` : '';
+  return `${what}${(bb.maxX - bb.minX).toFixed(1)} × ${(bb.maxY - bb.minY).toFixed(1)} mm · at X ${round1(bb.minX)}, Y ${round1(bb.minY)}`;
 }
 
 function renderProject(o) {
-  $('projTitle').textContent = o.name;
-  if (propsFor !== o.id || document.activeElement !== $('jX')) $('jX').value = o.x;
-  if (propsFor !== o.id || document.activeElement !== $('jY')) $('jY').value = o.y;
-  $('projSize').textContent = projSizeText(o);
-  $('projNote').textContent = o.skipped.length ? `Not imported: ${o.skipped.join(', ')}` : '';
-  if (!o.layers.some((l) => l.key === o.selLayer)) o.selLayer = o.layers[0]?.key;
-  const switched = propsFor !== o.id;
-  propsFor = o.id;
-  renderCuts(o);
-  if (switched || !$('cutEditor').contains(document.activeElement)) renderCutEditor(o);
+  const f = files.get(o.fileId);
+  const objs = selectedObjs();
+  const bb = objsBBox(objs);
+  $('projTitle').textContent = objs.length > 1 ? `${objs.length} items selected` : `${o.name} · ${f.name}`;
+  if (bb && document.activeElement !== $('jX')) $('jX').value = round1(bb.minX);
+  if (bb && document.activeElement !== $('jY')) $('jY').value = round1(bb.minY);
+  $('projSize').textContent = projSizeText(objs);
+  $('projNote').textContent = f.skipped.length ? `Not imported: ${f.skipped.join(', ')}` : '';
+  if (!f.cuts.some((c) => c.key === f.selCut)) f.selCut = f.cuts[0]?.key;
+  const switched = propsFor !== f.id;
+  propsFor = f.id;
+  renderCuts(f);
+  if (switched || !$('cutEditor').contains(document.activeElement)) renderCutEditor(f);
 }
 
 function h(tag, props = {}, ...kids) {
@@ -237,11 +293,11 @@ function h(tag, props = {}, ...kids) {
 }
 const spdPwr = (l) => `${Math.round(l.speed).toLocaleString()} / ${Math.round(l.power)}`;
 
-function renderCuts(o) {
+function renderCuts(f) {
   const body = $('cutsBody');
   body.innerHTML = '';
-  for (const l of o.layers) {
-    const tr = h('tr', { className: (l.key === o.selLayer ? 'sel' : '') + (l.enabled ? '' : ' off') });
+  for (const l of f.cuts) {
+    const tr = h('tr', { className: (l.key === f.selCut ? 'sel' : '') + (l.enabled ? '' : ' off') });
     const chip = h('span', { className: 'chip', textContent: String(l.index ?? '').padStart(2, '0'), title: l.name });
     chip.style.background = l.color || '#60a5fa';
     chip.style.color = textOn(l.color || '#60a5fa');
@@ -251,7 +307,7 @@ function renderCuts(o) {
     else {
       mode = h('select');
       for (const m of ['line', 'fill']) mode.add(new Option(MODE_LABEL[m], m, false, m === l.mode));
-      mode.onchange = () => { l.mode = mode.value; renderCutEditor(o); draw(); };
+      mode.onchange = () => { l.mode = mode.value; renderCutEditor(f); draw(); };
     }
     const toggle = (key, title) => {
       const cb = h('input', { type: 'checkbox', className: 'switch', checked: l[key], title });
@@ -263,17 +319,17 @@ function renderCuts(o) {
       toggle('enabled', 'Burn this layer'), toggle('shown', 'Show on screen'), toggle('air', 'Air assist'),
     );
     tr.onclick = (e) => {
-      if (e.target.closest('input, select') || o.selLayer === l.key) return;
-      o.selLayer = l.key;
-      renderCuts(o);
-      renderCutEditor(o);
+      if (e.target.closest('input, select') || f.selCut === l.key) return;
+      f.selCut = l.key;
+      renderCuts(f);
+      renderCutEditor(f);
     };
     body.append(tr);
   }
 }
 
-function renderCutEditor(o) {
-  const l = o.layers.find((x) => x.key === o.selLayer);
+function renderCutEditor(f) {
+  const l = f.cuts.find((x) => x.key === f.selCut);
   $('cutEditor').hidden = !l;
   if (!l) return;
   for (const inp of $('cutEditor').querySelectorAll('[data-k]')) {
@@ -287,8 +343,8 @@ function renderCutEditor(o) {
 }
 
 $('cutEditor').addEventListener('input', (e) => {
-  const o = selected();
-  const l = o?.layers?.find((x) => x.key === o.selLayer);
+  const f = files.get(selected()?.fileId);
+  const l = f?.cuts.find((x) => x.key === f.selCut);
   const k = e.target.dataset.k;
   if (!l || !k) return;
   if (k === 'dither') { l.dither = e.target.value; return; }
@@ -308,22 +364,25 @@ function textOn(hex) {
   return 0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255) > 140 ? '#000' : '#fff';
 }
 
-async function importFiles(files) {
-  for (const file of files) {
+async function importFiles(fileList) {
+  for (const file of fileList) {
     if (!/\.lbrn2?$/i.test(file.name)) { log(`${file.name}: not a LightBurn file (.lbrn2 / .lbrn).`, 'err'); continue; }
     try {
       log(`Importing ${file.name}…`);
       const proj = await LightBurn.load(await file.text(), file.name.replace(/\.lbrn2?$/i, ''));
-      proj.id = uid();
-      objects.push(proj);
-      selectedId = proj.id;
-      const summary = proj.layers.map((l) => `${l.name} ${MODE_LABEL[l.mode]} ${l.power}% ${l.speed}mm/min`).join(' · ');
-      log(`Imported "${proj.name}" – ${proj.geom.width.toFixed(1)} × ${proj.geom.height.toFixed(1)} mm. Layers: ${summary}`);
-      if (proj.skipped.length) log(`Skipped: ${proj.skipped.join(', ')}`, 'err');
+      const f = { id: uid(), name: proj.name, cuts: proj.cuts, skipped: proj.skipped, selCut: null };
+      files.set(f.id, f);
+      const items = proj.items.map((it) => ({ id: uid(), type: 'project', fileId: f.id, ...it }));
+      objects.push(...items);
+      select(items.map((o) => o.id));
+      const bb = objsBBox(items);
+      const summary = f.cuts.map((l) => `${l.name} ${MODE_LABEL[l.mode]} ${l.power}% ${l.speed}mm/min`).join(' · ');
+      log(`Imported "${f.name}" – ${items.length} items, ${(bb.maxX - bb.minX).toFixed(1)} × ${(bb.maxY - bb.minY).toFixed(1)} mm. Layers: ${summary}`);
+      if (f.skipped.length) log(`Skipped: ${f.skipped.join(', ')}`, 'err');
       const p = profile();
-      if (proj.x < 0 || proj.y < 0 || proj.x + proj.geom.width > p.bedW || proj.y + proj.geom.height > p.bedH) {
+      if (bb.minX < 0 || bb.minY < 0 || bb.maxX > p.bedW || bb.maxY > p.bedH) {
         log(`Kept LightBurn's position, but part of it is outside your ${p.bedW}×${p.bedH} bed. ` +
-          'Check your bed size under “My laser…”, turn off layers you don\'t need, or move it.', 'err');
+          'Click an item to move it on its own, check your bed size under “My laser…”, or turn off layers you don\'t need.', 'err');
       }
     } catch (e) {
       log(`Could not import ${file.name}: ${e.message}`, 'err');
@@ -414,16 +473,18 @@ function draw() {
     if (!o.geom) continue;
     if (o.type === 'project') drawProject(o, v, wco);
     else drawText(o, v, wco);
-    if (o.id === selectedId) {
+    if (selection.has(o.id)) {
       const [x0, y0] = v.toPx(o.x + wco.x, o.y + o.geom.height + wco.y);
       ctx.setLineDash([4, 3]);
-      ctx.strokeStyle = '#e6e7ea';
+      ctx.strokeStyle = o.id === selectedId ? '#e6e7ea' : '#9ca3af';
       ctx.lineWidth = 1;
       ctx.strokeRect(x0 - 3, y0 - 3, o.geom.width * v.s + 6, o.geom.height * v.s + 6);
       ctx.setLineDash([]);
-      ctx.fillStyle = '#e6e7ea';
-      ctx.textAlign = 'left';
-      ctx.fillText(`${o.geom.width.toFixed(1)} × ${o.geom.height.toFixed(1)} mm`, x0 - 3, y0 - 8);
+      if (o.id === selectedId && selection.size === 1) {
+        ctx.fillStyle = '#e6e7ea';
+        ctx.textAlign = 'left';
+        ctx.fillText(`${o.geom.width.toFixed(1)} × ${o.geom.height.toFixed(1)} mm`, x0 - 3, y0 - 8);
+      }
     }
   }
 
@@ -476,7 +537,8 @@ const LAYER_COLORS = { line: '#60a5fa', fill: 'rgba(245, 158, 11, 0.85)' };
 function drawProject(o, v, wco) {
   const dx = o.x + wco.x, dy = o.y + wco.y;
   const order = { image: 0, fill: 1, line: 2 };
-  for (const l of [...o.layers].sort((a, b) => order[a.mode] - order[b.mode])) {
+  for (const part of [...o.parts].sort((a, b) => order[a.cut.mode] - order[b.cut.mode])) {
+    const l = { ...part.cut, polys: part.polys, images: part.images };
     if (l.shown === false) continue;
     ctx.globalAlpha = l.enabled ? 1 : 0.25;
     // The bed is dark, so LightBurn's black layer (C00) is drawn light.
@@ -513,11 +575,18 @@ canvas.addEventListener('pointerdown', (e) => {
   const wco = grbl.status.wco;
   const dx = mx - wco.x, dy = my - wco.y;
   const tol = 6 / v.s;
-  const hit = [...objects].reverse().find((o) => o.geom &&
+  const hits = objects.filter((o) => o.geom &&
     dx >= o.x - tol && dx <= o.x + o.geom.width + tol && dy >= o.y - tol && dy <= o.y + o.geom.height + tol);
-  selectedId = hit ? hit.id : null;
-  if (hit) {
-    drag = { obj: hit, sx: mx, sy: my, ox: hit.x, oy: hit.y };
+  const hit = hits.sort((a, b) => a.geom.width * a.geom.height - b.geom.width * b.geom.height)[0];
+  if (!hit) select([]);
+  else if (e.shiftKey || e.metaKey) toggleSelect(hit.id);
+  else if (!selection.has(hit.id)) select([hit.id]);
+  else selectedId = hit.id;
+  if (hit && selection.has(hit.id)) {
+    const objs = selectedObjs();
+    // A click (no drag) on an item inside a bigger selection narrows the selection to that item.
+    const narrowTo = !(e.shiftKey || e.metaKey) && selection.size > 1 ? hit.id : null;
+    drag = { objs, start: objs.map((o) => [o.x, o.y]), sx: mx, sy: my, moved: false, narrowTo };
     canvas.setPointerCapture(e.pointerId);
     canvas.style.cursor = 'grabbing';
   }
@@ -526,12 +595,17 @@ canvas.addEventListener('pointerdown', (e) => {
 canvas.addEventListener('pointermove', (e) => {
   if (!drag) return;
   const [mx, my] = view().toMm(e.offsetX, e.offsetY);
-  drag.obj.x = round1(drag.ox + mx - drag.sx);
-  drag.obj.y = round1(drag.oy + my - drag.sy);
+  const ddx = round1(mx - drag.sx), ddy = round1(my - drag.sy);
+  if (ddx || ddy) drag.moved = true;
+  drag.objs.forEach((o, i) => { o.x = drag.start[i][0] + ddx; o.y = drag.start[i][1] + ddy; });
   renderProps();
   draw();
 });
-canvas.addEventListener('pointerup', () => { drag = null; canvas.style.cursor = 'default'; });
+canvas.addEventListener('pointerup', () => {
+  if (drag && !drag.moved && drag.narrowTo) { select([drag.narrowTo]); refresh(); }
+  drag = null;
+  canvas.style.cursor = 'default';
+});
 
 // ---------------------------------------------------------------- console
 
@@ -676,6 +750,8 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && job) { stopJob(); return; }
   const tag = document.activeElement?.tagName;
   if (['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) return;
+  if (e.key === 'a' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); select(objects.map((o) => o.id)); refresh(); return; }
+  if ((e.key === 'Delete' || e.key === 'Backspace') && selection.size && !job) { e.preventDefault(); deleteSelection(); return; }
   const keys = { ArrowUp: [0, 1], ArrowDown: [0, -1], ArrowLeft: [-1, 0], ArrowRight: [1, 0] };
   if (keys[e.key]) { e.preventDefault(); jog(...keys[e.key]); }
 });
@@ -710,7 +786,7 @@ async function jobItems() {
   const items = [];
   for (const o of objects) {
     try { await ensureGeom(o); } catch { continue; }
-    if (o.type === 'project' ? o.layers.some((l) => l.enabled) : o.geom?.polys.length) items.push(o);
+    if (o.type === 'project' ? o.parts.some((p) => p.cut.enabled) : o.geom?.polys.length) items.push(o);
   }
   if (!items.length) return [];
 
@@ -724,17 +800,24 @@ async function jobItems() {
     sy = pos.y - minY;
   }
   const out = [];
+  const byCut = new Map();
   for (const o of items) {
     const dx = o.x + sx, dy = o.y + sy;
     const move = (polys) => polys.map((p) => p.map((pt) => ({ x: pt.x + dx, y: pt.y + dy })));
     if (o.type === 'project') {
-      for (const l of o.layers) {
+      for (const part of o.parts) {
+        const l = part.cut;
         if (!l.enabled) continue;
-        out.push({
-          label: `${o.name} ${l.name}`, mode: l.mode, interval: l.interval, dither: l.dither,
-          power: l.power, minPower: l.minPower, air: l.air, speed: l.speed, passes: l.passes, polys: move(l.polys),
-          images: l.images.map((im) => ({ ...im, m: Geometry.mat.mul(Geometry.mat.translate(dx, dy), im.m) })),
-        });
+        if (!byCut.has(l)) {
+          byCut.set(l, {
+            label: `${files.get(o.fileId)?.name} ${l.name}`, mode: l.mode, interval: l.interval, dither: l.dither,
+            power: l.power, minPower: l.minPower, air: l.air, speed: l.speed, passes: l.passes, polys: [], images: [],
+          });
+          out.push(byCut.get(l));
+        }
+        const it = byCut.get(l);
+        it.polys.push(...move(part.polys));
+        it.images.push(...part.images.map((im) => ({ ...im, m: Geometry.mat.mul(Geometry.mat.translate(dx, dy), im.m) })));
       }
     } else {
       out.push({
@@ -772,7 +855,11 @@ $('frameBtn').onclick = async () => {
   if (!items.length) return alert('Add some text first.');
   const bb = itemsBBox(items);
   if (!checkBounds(bb)) return;
-  for (const l of Geometry.frameGcode(bb, profile().frameSpeed)) cmd(l);
+  // Faint visible beam: never more than 5 %, so framing can't burn the material.
+  const p = profile();
+  const maxS = grbl.settings['30'] || p.maxS;
+  const s = $('frameLaser').checked ? Math.max(1, Math.round((Math.min(5, p.framePower ?? 1) / 100) * maxS)) : 0;
+  for (const l of Geometry.frameGcode(bb, p.frameSpeed, s)) cmd(l);
 };
 
 $('saveBtn').onclick = async () => {
@@ -856,6 +943,7 @@ $('pauseBtn').onclick = () => {
 const pForm = $('profileForm');
 function openProfileDialog(p) {
   for (const k of ['name', 'bedW', 'bedH', 'maxS', 'baud', 'firePower', 'frameSpeed']) pForm.elements[k].value = p[k];
+  pForm.elements.framePower.value = p.framePower ?? 1;
   pForm.dataset.id = p.id || '';
   const so = p.scanOffset || { enabled: false, rows: [] };
   pForm.elements.scanEnabled.checked = !!so.enabled;
@@ -918,6 +1006,7 @@ pForm.addEventListener('submit', (e) => {
     name: el.name.value.trim() || 'Laser',
     bedW: Number(el.bedW.value), bedH: Number(el.bedH.value), maxS: Number(el.maxS.value),
     baud: Number(el.baud.value), firePower: Number(el.firePower.value), frameSpeed: Number(el.frameSpeed.value),
+    framePower: Math.min(5, Number(el.framePower.value) || 1),
     scanOffset: { enabled: el.scanEnabled.checked, rows: readScanRows() },
     airCmd: el.airCmd.value || 'M8',
   };
@@ -930,6 +1019,13 @@ pForm.addEventListener('submit', (e) => {
 $('profileSelect').onchange = () => { profileId = $('profileSelect').value; saveProfiles(); };
 
 // ---------------------------------------------------------------- start
+
+function renderFrameLaser() {
+  $('frameLaserText').textContent = `Laser on while framing (${Math.min(5, profile().framePower ?? 1)}%)`;
+}
+$('frameLaser').checked = load('ls.frameLaser', false);
+$('frameLaser').onchange = () => store('ls.frameLaser', $('frameLaser').checked);
+renderFrameLaser();
 
 $('addTextBtn').onclick = addText;
 bindProps();

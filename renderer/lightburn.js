@@ -93,6 +93,14 @@ const LightBurn = (() => {
     return polys;
   }
 
+  const TYPE_NAME = { Bitmap: 'Image', Group: 'Group', Path: 'Shape', Rect: 'Rectangle', Ellipse: 'Ellipse' };
+  function shapeName(el) {
+    const type = el.getAttribute('Type');
+    const str = (el.getAttribute('Str') || '').replace(/\s+/g, ' ').trim();
+    if (type === 'Text' && str) return str.length > 28 ? str.slice(0, 27) + '…' : str;
+    return TYPE_NAME[type] || type || 'Shape';
+  }
+
   function parse(xmlText) {
     const doc = new DOMParser().parseFromString(xmlText, 'application/xml');
     const root = doc.documentElement;
@@ -117,7 +125,9 @@ const LightBurn = (() => {
     const shapes = [];
     const skipped = new Map();
 
-    function walk(el, parentM, cutIndexOverride) {
+    // `top` = index of the top-level shape this belongs to; each one becomes a separately movable item.
+    const tops = [];
+    function walk(el, parentM, cutIndexOverride, top) {
       const type = el.getAttribute('Type');
       const xf = child(el, 'XForm');
       const local = xf ? xf.textContent.trim().split(/\s+/).map(Number) : IDENTITY;
@@ -126,10 +136,10 @@ const LightBurn = (() => {
 
       if (type === 'Group') {
         const kids = child(el, 'Children');
-        if (kids) for (const c of kids.children) if (c.nodeName === 'Shape') walk(c, m);
+        if (kids) for (const c of kids.children) if (c.nodeName === 'Shape') walk(c, m, undefined, top);
       } else if (type === 'Text') {
         const bp = child(el, 'BackupPath');
-        if (bp) walk(bp, parentM, cutIndex);
+        if (bp) walk(bp, parentM, cutIndex, top);
         else skipped.set('Text without outline', (skipped.get('Text without outline') || 0) + 1);
       } else if (type === 'Path') {
         const vid = el.getAttribute('VertID');
@@ -143,22 +153,22 @@ const LightBurn = (() => {
         if (!verts) verts = parseOldVerts(el);
         if (!prims) prims = parseOldPrims(el);
         const polys = pathToPolys(verts, prims, m);
-        if (polys.length) shapes.push({ kind: 'path', cutIndex, polys });
+        if (polys.length) shapes.push({ kind: 'path', cutIndex, top, polys });
       } else if (type === 'Rect') {
         const w = num(el, 'W') / 2, h = num(el, 'H') / 2;
         const poly = [[-w, -h], [w, -h], [w, h], [-w, h], [-w, -h]].map(([x, y]) => apply(m, x, y));
-        shapes.push({ kind: 'path', cutIndex, polys: [poly] });
+        shapes.push({ kind: 'path', cutIndex, top, polys: [poly] });
       } else if (type === 'Ellipse') {
         const rx = num(el, 'Rx'), ry = num(el, 'Ry');
         const n = Math.max(24, Math.min(360, Math.ceil((Math.PI * 2 * Math.max(rx, ry)) / 0.3)));
         const poly = [];
         for (let i = 0; i <= n; i++) poly.push(apply(m, rx * Math.cos((i / n) * Math.PI * 2), ry * Math.sin((i / n) * Math.PI * 2)));
-        shapes.push({ kind: 'path', cutIndex, polys: [poly] });
+        shapes.push({ kind: 'path', cutIndex, top, polys: [poly] });
       } else if (type === 'Bitmap') {
         const data = el.getAttribute('Data');
         if (data) {
           shapes.push({
-            kind: 'bitmap', cutIndex, m, data,
+            kind: 'bitmap', cutIndex, top, m, data,
             w: num(el, 'W'), h: num(el, 'H'),
             gamma: num(el, 'Gamma', 1), contrast: num(el, 'Contrast'), brightness: num(el, 'Brightness'),
           });
@@ -168,8 +178,12 @@ const LightBurn = (() => {
       }
     }
 
-    for (const el of root.children) if (el.nodeName === 'Shape') walk(el, IDENTITY);
-    return { settings, shapes, skipped };
+    for (const el of root.children) {
+      if (el.nodeName !== 'Shape') continue;
+      tops.push(shapeName(el));
+      walk(el, IDENTITY, undefined, tops.length - 1);
+    }
+    return { settings, shapes, skipped, tops };
   }
 
   async function decodeImage(shape) {
@@ -226,20 +240,26 @@ const LightBurn = (() => {
   ];
   const layerColor = (i) => PALETTE[((i % PALETTE.length) + PALETTE.length) % PALETTE.length];
 
-  /** Parse + decode a LightBurn file into a Laser Studio project object. */
+  /**
+   * Parse + decode a LightBurn file.
+   * Returns { name, cuts, items, skipped }: `cuts` are the file's layer settings (shared by every item),
+   * `items` are its top-level shapes, each { name, x, y, geom, parts: [{ cut, polys, images }] }
+   * with geometry in mm relative to the item's bottom-left corner and (x, y) its place on the bed.
+   */
   async function load(xmlText, name) {
-    const { settings, shapes, skipped } = parse(xmlText);
-    const layers = new Map();
+    const { settings, shapes, skipped, tops } = parse(xmlText);
+    const cuts = new Map();
+    const groups = new Map();
     for (const s of shapes) {
       const key = `${s.kind === 'bitmap' ? 'img' : 'cut'}:${s.cutIndex}`;
-      if (!layers.has(key)) {
+      if (!cuts.has(key)) {
         const cs = settings.get(key) || { type: s.kind === 'bitmap' ? 'Image' : 'Cut' };
-        layers.set(key, {
+        cuts.set(key, {
           key,
           name: cs.name || `C${String(s.cutIndex).padStart(2, '0')}`,
-          mode: MODE[cs.type] || 'line',
           index: s.cutIndex,
           color: layerColor(s.cutIndex),
+          mode: MODE[cs.type] || 'line',
           power: Number.isFinite(cs.maxPower) ? cs.maxPower : 50,
           minPower: Number.isFinite(cs.minPower) ? cs.minPower : 0,
           air: cs.runBlower !== 0, // LightBurn leaves air assist on unless the file turns it off
@@ -250,36 +270,38 @@ const LightBurn = (() => {
           dither: cs.ditherMode || 'stucki',
           enabled: cs.doOutput !== 0,
           priority: cs.priority ?? 0,
-          polys: [],
-          images: [],
         });
       }
-      const layer = layers.get(key);
-      if (s.kind === 'bitmap') layer.images.push(await decodeImage(s));
-      else layer.polys.push(...s.polys);
+      if (!groups.has(s.top)) groups.set(s.top, new Map());
+      const parts = groups.get(s.top);
+      if (!parts.has(key)) parts.set(key, { cut: cuts.get(key), polys: [], images: [] });
+      const part = parts.get(key);
+      if (s.kind === 'bitmap') part.images.push(await decodeImage(s));
+      else part.polys.push(...s.polys);
     }
 
-    // Shift everything so the design's bottom-left corner is (0,0); remember where it was.
-    const allPts = [];
-    for (const l of layers.values()) {
-      for (const p of l.polys) allPts.push(p);
-      for (const im of l.images) allPts.push(Geometry.imageCorners(im));
+    const items = [];
+    for (const [top, partMap] of groups) {
+      const parts = [...partMap.values()];
+      const bb = Geometry.bbox(parts.flatMap((p) => [...p.polys, ...p.images.map(Geometry.imageCorners)]));
+      if (!bb) continue;
+      // Keep exact positions (not rounded) so items stay lined up with each other.
+      const shift = Geometry.mat.translate(-bb.minX, -bb.minY);
+      for (const p of parts) {
+        p.polys = p.polys.map((poly) => poly.map((pt) => ({ x: pt.x - bb.minX, y: pt.y - bb.minY })));
+        for (const im of p.images) im.m = mul(shift, im.m);
+      }
+      items.push({
+        name: tops[top], x: bb.minX, y: bb.minY,
+        geom: { key: 'project', width: bb.maxX - bb.minX, height: bb.maxY - bb.minY }, parts,
+      });
     }
-    const bb = Geometry.bbox(allPts);
-    if (!bb) throw new Error('No shapes found in this file.');
-    const shift = [1, 0, 0, 1, -bb.minX, -bb.minY];
-    for (const l of layers.values()) {
-      l.polys = l.polys.map((p) => p.map((pt) => ({ x: pt.x - bb.minX, y: pt.y - bb.minY })));
-      for (const im of l.images) im.m = mul(shift, im.m);
-    }
+    if (!items.length) throw new Error('No shapes found in this file.');
 
     return {
-      type: 'project',
       name,
-      x: Math.round(bb.minX * 10) / 10,
-      y: Math.round(bb.minY * 10) / 10,
-      geom: { key: 'project', width: bb.maxX - bb.minX, height: bb.maxY - bb.minY },
-      layers: [...layers.values()].sort((a, b) => a.priority - b.priority),
+      cuts: [...cuts.values()].sort((a, b) => a.priority - b.priority),
+      items,
       skipped: [...skipped.entries()].map(([t, n]) => `${n}× ${t}`),
     };
   }
