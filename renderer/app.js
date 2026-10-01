@@ -143,6 +143,69 @@ function moveBy(objs, dx, dy) {
   for (const o of objs) { o.x += dx; o.y += dy; }
 }
 
+// The design area: a box (e.g. a 100 × 145 mm card) you lay the design out inside. Work coordinates, like objects.
+const area = { on: true, w: 100, h: 145, x: null, y: null, ...load('ls.area', {}) };
+function saveArea() { store('ls.area', area); }
+function areaRect() {
+  if (!area.on || !(area.w > 0) || !(area.h > 0)) return null;
+  if (area.x === null || area.y === null) centerArea();
+  return { minX: area.x, minY: area.y, maxX: area.x + area.w, maxY: area.y + area.h };
+}
+function centerArea() {
+  const wco = grbl.status.wco;
+  area.x = round1(profile().bedW / 2 - area.w / 2 - wco.x);
+  area.y = round1(profile().bedH / 2 - area.h / 2 - wco.y);
+}
+
+/** Align: one item → inside the design area (or the bed); several → to the edges of the selection. */
+function alignSelection(how) {
+  const objs = selectedObjs().filter((o) => o.geom);
+  if (!objs.length) return;
+  const wco = grbl.status.wco;
+  const target = objs.length > 1 ? objsBBox(objs) : areaRect() ||
+    { minX: -wco.x, minY: -wco.y, maxX: profile().bedW - wco.x, maxY: profile().bedH - wco.y };
+  for (const o of objs) {
+    const w = o.geom.width, h = o.geom.height;
+    if (how === 'left') o.x = target.minX;
+    if (how === 'right') o.x = target.maxX - w;
+    if (how === 'hcenter') o.x = (target.minX + target.maxX) / 2 - w / 2;
+    if (how === 'bottom') o.y = target.minY;
+    if (how === 'top') o.y = target.maxY - h;
+    if (how === 'vcenter') o.y = (target.minY + target.maxY) / 2 - h / 2;
+  }
+  refresh();
+}
+
+/**
+ * Snap a dragged selection (bbox bb, already moved by dx/dy) to the design area and to other items:
+ * left/centre/right against left/centre/right, same for bottom/middle/top. Returns the corrected
+ * offsets plus the guide lines to draw.
+ */
+function snapDrag(bb, dx, dy, tol, moving) {
+  const xs = [], ys = [];
+  const addRect = (r) => {
+    xs.push(r.minX, (r.minX + r.maxX) / 2, r.maxX);
+    ys.push(r.minY, (r.minY + r.maxY) / 2, r.maxY);
+  };
+  const a = areaRect();
+  if (a) addRect(a);
+  for (const o of objects) {
+    if (!o.geom || moving.has(o)) continue;
+    addRect({ minX: o.x, minY: o.y, maxX: o.x + o.geom.width, maxY: o.y + o.geom.height });
+  }
+  const best = (edges, targets) => {
+    let pick = null;
+    for (const e of edges) for (const t of targets) {
+      const d = t - e;
+      if (Math.abs(d) <= tol && (!pick || Math.abs(d) < Math.abs(pick.d))) pick = { d, at: t };
+    }
+    return pick;
+  };
+  const sx = best([bb.minX + dx, (bb.minX + bb.maxX) / 2 + dx, bb.maxX + dx], xs);
+  const sy = best([bb.minY + dy, (bb.minY + bb.maxY) / 2 + dy, bb.maxY + dy], ys);
+  return { dx: dx + (sx?.d || 0), dy: dy + (sy?.d || 0), guides: { x: sx ? [sx.at] : [], y: sy ? [sy.at] : [] } };
+}
+
 function objsBBox(objs) {
   const pts = objs.filter((o) => o.geom).map((o) => [{ x: o.x, y: o.y }, { x: o.x + o.geom.width, y: o.y + o.geom.height }]);
   return Geometry.bbox(pts);
@@ -510,6 +573,26 @@ function draw() {
 
   const wco = grbl.status.wco;
 
+  // design area
+  const a = areaRect();
+  if (a) {
+    const [ax, ay] = v.toPx(a.minX + wco.x, a.maxY + wco.y);
+    const aw = area.w * v.s, ah = area.h * v.s;
+    ctx.fillStyle = 'rgba(255,255,255,0.05)';
+    ctx.fillRect(ax, ay, aw, ah);
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+    ctx.lineWidth = 1;
+    line(ax + aw / 2, ay, ax + aw / 2, ay + ah);
+    line(ax, ay + ah / 2, ax + aw, ay + ah / 2);
+    ctx.strokeStyle = '#a5b4fc';
+    ctx.setLineDash([6, 4]);
+    ctx.strokeRect(ax, ay, aw, ah);
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#a5b4fc';
+    ctx.textAlign = 'right';
+    ctx.fillText(`${area.w} × ${area.h} mm`, ax + aw, ay - 6);
+  }
+
   // design
   for (const o of objects) {
     if (!o.geom) continue;
@@ -528,6 +611,14 @@ function draw() {
         ctx.fillText(`${o.geom.width.toFixed(1)} × ${o.geom.height.toFixed(1)} mm`, x0 - 3, y0 - 8);
       }
     }
+  }
+
+  // smart guides while dragging
+  if (drag?.guides) {
+    ctx.strokeStyle = '#ec4899';
+    ctx.lineWidth = 1;
+    for (const gx of drag.guides.x) { const [px] = v.toPx(gx + wco.x, 0); line(px, 0, px, H); }
+    for (const gy of drag.guides.y) { const [, py] = v.toPx(0, gy + wco.y); line(0, py, W, py); }
   }
 
   // work origin
@@ -628,7 +719,7 @@ canvas.addEventListener('pointerdown', (e) => {
     const objs = selectedObjs();
     // A click (no drag) on an item inside a bigger selection narrows the selection to that item.
     const narrowTo = !(e.shiftKey || e.metaKey) && selection.size > 1 ? hit.id : null;
-    drag = { objs, start: objs.map((o) => [o.x, o.y]), sx: mx, sy: my, moved: false, narrowTo };
+    drag = { objs, start: objs.map((o) => [o.x, o.y]), bb: objsBBox(objs), sx: mx, sy: my, moved: false, narrowTo, guides: null };
     canvas.setPointerCapture(e.pointerId);
     canvas.style.cursor = 'grabbing';
   }
@@ -636,9 +727,15 @@ canvas.addEventListener('pointerdown', (e) => {
 });
 canvas.addEventListener('pointermove', (e) => {
   if (!drag) return;
-  const [mx, my] = view().toMm(e.offsetX, e.offsetY);
-  const ddx = round1(mx - drag.sx), ddy = round1(my - drag.sy);
+  const v = view();
+  const [mx, my] = v.toMm(e.offsetX, e.offsetY);
+  let ddx = round1(mx - drag.sx), ddy = round1(my - drag.sy);
   if (ddx || ddy) drag.moved = true;
+  drag.guides = null;
+  if (!e.altKey && drag.bb) {
+    const snap = snapDrag(drag.bb, ddx, ddy, 6 / v.s, new Set(drag.objs));
+    ddx = snap.dx; ddy = snap.dy; drag.guides = snap.guides;
+  }
   drag.objs.forEach((o, i) => { o.x = drag.start[i][0] + ddx; o.y = drag.start[i][1] + ddy; });
   renderProps();
   draw();
@@ -646,6 +743,7 @@ canvas.addEventListener('pointermove', (e) => {
 canvas.addEventListener('pointerup', () => {
   if (drag && !drag.moved && drag.narrowTo) { select([drag.narrowTo]); refresh(); }
   drag = null;
+  draw();
   canvas.style.cursor = 'default';
 });
 
@@ -1206,11 +1304,33 @@ $('frameLaser').checked = load('ls.frameLaser', false);
 $('frameLaser').onchange = () => store('ls.frameLaser', $('frameLaser').checked);
 renderFrameLaser();
 
+function renderArea() {
+  areaRect();
+  for (const [id, k] of [['areaW', 'w'], ['areaH', 'h'], ['areaX', 'x'], ['areaY', 'y']]) {
+    if (document.activeElement !== $(id)) $(id).value = area[k] === null ? '' : round1(area[k]);
+  }
+  $('areaOn').checked = area.on;
+  $('areaOn').closest('.area-box').classList.toggle('off', !area.on);
+}
+$('areaOn').onchange = () => { area.on = $('areaOn').checked; saveArea(); renderArea(); draw(); };
+for (const [id, k] of [['areaW', 'w'], ['areaH', 'h'], ['areaX', 'x'], ['areaY', 'y']]) {
+  $(id).addEventListener('input', () => {
+    const v = parseFloat($(id).value);
+    if (!Number.isFinite(v) || ((k === 'w' || k === 'h') && v <= 0)) return;
+    area[k] = v;
+    saveArea();
+    draw();
+  });
+}
+$('areaCenter').onclick = () => { centerArea(); saveArea(); renderArea(); draw(); };
+for (const b of document.querySelectorAll('[data-align]')) b.onclick = () => alignSelection(b.dataset.align);
+
 $('addTextBtn').onclick = addText;
 bindProps();
 renderProfileSelect();
 renderPorts();
 refreshPorts();
+renderArea();
 setEnabled();
 new ResizeObserver(resizeCanvas).observe(canvas);
 loadFonts()

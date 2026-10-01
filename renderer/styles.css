@@ -113,6 +113,11 @@ label.inline select { width: auto; min-width: 220px; }
 .switch:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 h2.sub { margin: 12px 0 6px; }
+.area-box { background: var(--panel-2); border-radius: var(--radius); padding: 8px 9px 9px; margin: 10px 0 8px; }
+.area-box input { padding: 4px 6px; }
+.area-box.off .row, .area-box.off button { opacity: .45; }
+.align-bar { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; margin-bottom: 6px; }
+.align-bar button { padding: 5px 0; display: grid; place-items: center; }
 table.cuts { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 8px; }
 table.cuts th { text-align: left; font-weight: 500; color: var(--muted); padding: 3px 4px; border-bottom: 1px solid var(--line); font-size: 11px; }
 table.cuts td { padding: 4px; border-bottom: 1px solid #26292e; white-space: nowrap; }

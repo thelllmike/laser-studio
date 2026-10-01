@@ -41,16 +41,12 @@ class Grbl extends EventTarget {
     // Arduino-based boards reboot when the port opens; wait for the "Grbl x.x" banner.
     // ESP32 / 32-bit boards usually don't reboot, so give up waiting after a moment.
     await this.waitForBanner(2500);
+    // Any line back ("ok", a status report, a banner) proves a GRBL controller is listening.
+    // Some boards (e.g. MKS DLC32) take a couple of seconds before their first status report.
+    const replied = this.waitForReply(8000);
     await this.writeRaw('\r\n');
-    await sleep(100);
-
-    this.lastStatusAt = 0;
     this.pollTimer = setInterval(() => this.realtime(0x3f /* ? */), 250);
-
-    // A GRBL controller answers "?" within a few hundred ms. Silence means this port isn't a laser.
-    const start = Date.now();
-    while (!this.lastStatusAt && Date.now() - start < 3000) await sleep(100);
-    if (!this.lastStatusAt) {
+    if (!(await replied)) {
       await this.disconnect();
       throw new Error('No reply from a GRBL laser controller on this port. Check the laser is switched on, LightBurn (or any other laser app) is closed, and the baud rate under Devices → Edit is right.');
     }
@@ -60,6 +56,13 @@ class Grbl extends EventTarget {
     } catch (e) {
       this.emit('log', { dir: 'err', text: `Could not read settings: ${e.message}` });
     }
+  }
+
+  waitForReply(ms) {
+    return new Promise((resolve) => {
+      const t = setTimeout(() => { this.replyWaiter = null; resolve(false); }, ms);
+      this.replyWaiter = () => { clearTimeout(t); this.replyWaiter = null; resolve(true); };
+    });
   }
 
   waitForBanner(ms) {
@@ -73,9 +76,12 @@ class Grbl extends EventTarget {
     clearInterval(this.pollTimer);
     this.flush('Disconnected');
     this.connected = false;
-    try { await this.reader?.cancel(); } catch {}
+    // A stuck port must not leave the app hanging in "Connecting…", so each step gets a time limit.
+    const limit = (p) => Promise.race([p, sleep(1500)]);
+    try { await limit(this.reader?.cancel()); } catch {}
+    try { await limit(this.writer?.abort()); } catch {}
     try { this.writer?.releaseLock(); } catch {}
-    try { await this.port?.close(); } catch {}
+    try { await limit(this.port?.close()); } catch {}
     this.port = this.reader = this.writer = null;
     this.status.state = 'Disconnected';
     this.emit('status', this.status);
@@ -107,6 +113,7 @@ class Grbl extends EventTarget {
   }
 
   handleLine(line) {
+    this.replyWaiter?.();
     if (line.startsWith('<') && line.endsWith('>')) {
       this.parseStatus(line);
       return;
@@ -133,7 +140,6 @@ class Grbl extends EventTarget {
   }
 
   parseStatus(line) {
-    this.lastStatusAt = Date.now();
     const parts = line.slice(1, -1).split('|');
     const st = this.status;
     st.state = parts[0].split(':')[0];

@@ -28,6 +28,27 @@
         </div>
         <input id="importFile" type="file" accept=".lbrn2,.lbrn" hidden multiple>
         <ul id="objectList" class="objlist"></ul>
+        <div class="area-box">
+          <label class="check"><input type="checkbox" class="switch" id="areaOn"> Design area</label>
+          <div class="row">
+            <label>Width (mm)<input id="areaW" type="number" min="1" step="1"></label>
+            <label>Height (mm)<input id="areaH" type="number" min="1" step="1"></label>
+          </div>
+          <div class="row">
+            <label>X (mm)<input id="areaX" type="number" step="0.5"></label>
+            <label>Y (mm)<input id="areaY" type="number" step="0.5"></label>
+          </div>
+          <button type="button" id="areaCenter" class="wide">Center area on bed</button>
+        </div>
+        <div class="align-bar" title="One item: aligns inside the design area. Several: aligns them to each other.">
+          <button type="button" data-align="left" title="Align left"><svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 1v14"/><rect x="4" y="3.5" width="9" height="3"/><rect x="4" y="9.5" width="5" height="3"/></svg></button>
+          <button type="button" data-align="hcenter" title="Center horizontally"><svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 1v14"/><rect x="3" y="3.5" width="10" height="3"/><rect x="5" y="9.5" width="6" height="3"/></svg></button>
+          <button type="button" data-align="right" title="Align right"><svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 1v14"/><rect x="3" y="3.5" width="9" height="3"/><rect x="7" y="9.5" width="5" height="3"/></svg></button>
+          <button type="button" data-align="top" title="Align top"><svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1 2h14"/><rect x="3.5" y="4" width="3" height="9"/><rect x="9.5" y="4" width="3" height="5"/></svg></button>
+          <button type="button" data-align="vcenter" title="Center vertically"><svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1 8h14"/><rect x="3.5" y="3" width="3" height="10"/><rect x="9.5" y="5" width="3" height="6"/></svg></button>
+          <button type="button" data-align="bottom" title="Align bottom"><svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1 14h14"/><rect x="3.5" y="3" width="3" height="9"/><rect x="9.5" y="7" width="3" height="5"/></svg></button>
+        </div>
+        <div class="muted">Items snap to the area and to each other while dragging · hold ⌥ to move freely</div>
       </section>
 
       <section id="propsSection" hidden>
@@ -101,7 +122,7 @@
     <section class="stage">
       <canvas id="canvas"></canvas>
       <div id="dropHint" class="drop-hint" hidden>Drop LightBurn file to import</div>
-      <div class="stage-hint muted">Click an item to select it, drag to move · Shift-click for several · Drop .lbrn2 files here · Green + = your origin · Red ● = laser head</div>
+      <div class="stage-hint muted">Drag to move (snaps, ⌥ = free) · Shift-click for several · Drop .lbrn2 files here · Green + = your origin · Red ● = laser head</div>
     </section>
 
     <aside class="panel">
