@@ -52,7 +52,7 @@ class Grbl extends EventTarget {
     while (!this.lastStatusAt && Date.now() - start < 3000) await sleep(100);
     if (!this.lastStatusAt) {
       await this.disconnect();
-      throw new Error('No reply from a GRBL laser controller on this port. Check it is the laser\'s USB port, the laser is switched on, and the baud rate under “My laser…” is right.');
+      throw new Error('No reply from a GRBL laser controller on this port. Check the laser is switched on, LightBurn (or any other laser app) is closed, and the baud rate under Devices → Edit is right.');
     }
     this.emit('connection', true);
     try {

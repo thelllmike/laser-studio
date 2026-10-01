@@ -5,6 +5,9 @@ const os = require('os');
 
 let win = null;
 let pendingPortCallback = null;
+// Port the renderer asked for by name (e.g. "cu.usbserial-1110"). strict = fail instead of showing the picker.
+let preferredPort = null;
+const USB_PORT = /^cu\.(usb|wch|SLAB|ch34)/i;
 
 const FONT_DIRS = [
   '/System/Library/Fonts',
@@ -35,6 +38,15 @@ function createWindow() {
   ses.on('select-serial-port', (event, portList, _webContents, callback) => {
     event.preventDefault();
     if (pendingPortCallback) pendingPortCallback('');
+    pendingPortCallback = null;
+    const want = preferredPort;
+    preferredPort = null;
+    if (want) {
+      const bare = (n) => String(n || '').replace(/^\/dev\//, '');
+      const hit = portList.find((p) => bare(p.portName) === want.name || bare(p.portName) === want.name.replace(/^cu\./, ''));
+      if (hit) return callback(hit.portId);
+      if (want.strict) return callback('');
+    }
     pendingPortCallback = callback;
     win.webContents.send(
       'serial-port-list',
@@ -52,6 +64,35 @@ function createWindow() {
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   win.on('closed', () => { win = null; });
 }
+
+ipcMain.on('set-preferred-port', (_e, name, strict) => {
+  preferredPort = name ? { name: String(name), strict: !!strict } : null;
+});
+
+ipcMain.handle('list-usb-ports', () => {
+  try { return fs.readdirSync('/dev').filter((f) => USB_PORT.test(f)).sort(); } catch { return []; }
+});
+
+ipcMain.handle('export-device', async (_e, name, text) => {
+  const res = await dialog.showSaveDialog(win, {
+    title: 'Export laser device',
+    defaultPath: `${String(name || 'laser').replace(/[\\/:*?"<>|]+/g, '-')}.lsdevice.json`,
+    filters: [{ name: 'Laser Studio device', extensions: ['json'] }],
+  });
+  if (res.canceled || !res.filePath) return null;
+  fs.writeFileSync(res.filePath, text, 'utf8');
+  return res.filePath;
+});
+
+ipcMain.handle('import-device', async () => {
+  const res = await dialog.showOpenDialog(win, {
+    title: 'Import laser device',
+    filters: [{ name: 'Laser Studio device', extensions: ['json'] }],
+    properties: ['openFile'],
+  });
+  if (res.canceled || !res.filePaths[0]) return null;
+  return fs.readFileSync(res.filePaths[0], 'utf8');
+});
 
 ipcMain.on('serial-port-chosen', (_e, portId) => {
   if (pendingPortCallback) {

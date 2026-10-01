@@ -20,7 +20,8 @@ const DEFAULT_PROFILE = {
 };
 let profiles = load('ls.profiles', null);
 if (!Array.isArray(profiles) || !profiles.length) profiles = [{ id: uid(), ...DEFAULT_PROFILE }];
-let profileId = load('ls.profileId', profiles[0].id);
+let defaultId = load('ls.defaultId', null);
+let profileId = load('ls.defaultId', null) || load('ls.profileId', profiles[0].id);
 const profile = () => profiles.find((p) => p.id === profileId) || profiles[0];
 const gcodeOpts = () => {
   const p = profile();
@@ -30,7 +31,9 @@ const gcodeOpts = () => {
 function saveProfiles() {
   store('ls.profiles', profiles);
   store('ls.profileId', profileId);
+  store('ls.defaultId', defaultId);
   renderProfileSelect();
+  renderPorts();
   renderFrameLaser();
   draw();
 }
@@ -39,6 +42,45 @@ function renderProfileSelect() {
   const sel = $('profileSelect');
   sel.innerHTML = '';
   for (const p of profiles) sel.add(new Option(`${p.name} (${p.bedW}×${p.bedH})`, p.id, false, p.id === profile().id));
+}
+
+// ---------------------------------------------------------------- USB port dropdown
+
+let usbPorts = [];
+const AUTO_PORT = '';
+
+function renderPorts() {
+  const sel = $('portSelect');
+  const want = profile().port || AUTO_PORT;
+  sel.innerHTML = '';
+  sel.add(new Option(usbPorts.length ? 'Auto (first USB port)' : 'No USB laser found', AUTO_PORT));
+  for (const name of usbPorts) sel.add(new Option(name, name));
+  if (want && !usbPorts.includes(want)) sel.add(new Option(`${want} (not plugged in)`, want));
+  sel.value = want;
+}
+
+async function refreshPorts() {
+  try {
+    const list = await window.native.listUsbPorts();
+    if (list.join() === usbPorts.join()) return;
+    usbPorts = list;
+    renderPorts();
+  } catch {}
+}
+
+$('portSelect').onchange = () => {
+  profile().port = $('portSelect').value || undefined;
+  saveProfiles();
+};
+$('portSelect').addEventListener('mousedown', refreshPorts);
+window.addEventListener('focus', refreshPorts);
+setInterval(() => { if (!grbl.connected) refreshPorts(); }, 3000);
+
+/** Tell the port picker which port to use, so Connect doesn't have to ask. */
+function preferPort(strict = false) {
+  const chosen = profile().port || usbPorts[0] || null;
+  window.native.setPreferredPort(chosen, strict);
+  return chosen;
 }
 
 // ---------------------------------------------------------------- fonts
@@ -382,7 +424,7 @@ async function importFiles(fileList) {
       const p = profile();
       if (bb.minX < 0 || bb.minY < 0 || bb.maxX > p.bedW || bb.maxY > p.bedH) {
         log(`Kept LightBurn's position, but part of it is outside your ${p.bedW}×${p.bedH} bed. ` +
-          'Click an item to move it on its own, check your bed size under “My laser…”, or turn off layers you don\'t need.', 'err');
+          'Click an item to move it on its own, check your bed size under Devices → Edit, or turn off layers you don\'t need.', 'err');
       }
     } catch (e) {
       log(`Could not import ${file.name}: ${e.message}`, 'err');
@@ -664,6 +706,9 @@ $('connectBtn').onclick = async () => {
   try {
     $('connectBtn').disabled = true;
     $('statePill').textContent = 'Connecting…';
+    await refreshPorts();
+    const port = preferPort();
+    if (port) log(`Connecting to ${port}…`);
     await grbl.connect(Number(profile().baud) || 115200);
   } catch (e) {
     if (e.name !== 'NotFoundError') {
@@ -956,7 +1001,7 @@ function openProfileDialog(p) {
   for (const r of so.rows) addScanRow(r);
   if (!so.rows.length) addScanRow();
   pForm.elements.airCmd.value = p.airCmd || 'M8';
-  $('profileDelete').disabled = !p.id || profiles.length < 2;
+  $('profileTitle').textContent = p.id ? `Edit device – ${p.name}` : 'Create device manually';
   $('profileDialog').showModal();
 }
 function addScanRow(r = { speed: '', shift: '', initial: 0 }) {
@@ -986,16 +1031,7 @@ function readScanRows() {
     .sort((a, b) => a.speed - b.speed);
 }
 
-$('editProfileBtn').onclick = () => openProfileDialog(profile());
-$('profileNew').onclick = () => openProfileDialog({ ...DEFAULT_PROFILE, name: 'New laser' });
 $('profileCancel').onclick = () => $('profileDialog').close();
-$('profileDelete').onclick = () => {
-  if (!confirm('Delete this laser profile?')) return;
-  profiles = profiles.filter((p) => p.id !== pForm.dataset.id);
-  profileId = profiles[0].id;
-  saveProfiles();
-  $('profileDialog').close();
-};
 $('profileRead').onclick = async () => {
   if (!grbl.connected) return alert('Connect to the laser first.');
   try { await grbl.send('$$'); } catch (e) { return log(e.message, 'err'); }
@@ -1017,10 +1053,148 @@ pForm.addEventListener('submit', (e) => {
   };
   const existing = profiles.find((p) => p.id === pForm.dataset.id);
   if (existing) Object.assign(existing, data);
-  else { const p = { id: uid(), ...data }; profiles.push(p); profileId = p.id; }
+  else { const p = { id: uid(), ...data }; profiles.push(p); devSel = p.id; }
   saveProfiles();
+  renderDevices();
   $('profileDialog').close();
 });
+
+// ---------------------------------------------------------------- Devices window
+
+let devSel = null;
+let findFrom = 0; // Find My Laser resumes here if macOS needed another click
+
+function renderDevices() {
+  const ul = $('deviceList');
+  ul.innerHTML = '';
+  if (!profiles.some((p) => p.id === devSel)) devSel = profile().id;
+  for (const p of profiles) {
+    const li = h('li', {},
+      h('span', { className: 'badge', textContent: 'grbl' }),
+      h('span', { className: 'meta' },
+        h('b', { textContent: p.name }),
+        h('span', { textContent: `GRBL | GCode · ${p.bedW} × ${p.bedH} mm${p.port ? ' · ' + p.port : ''}` })));
+    if (p.id === defaultId) li.append(h('span', { className: 'tag', textContent: 'Default' }));
+    if (p.id === devSel) li.classList.add('sel');
+    li.onclick = () => { devSel = p.id; renderDevices(); };
+    li.ondblclick = () => openProfileDialog(p);
+    ul.append(li);
+  }
+  const busy = grbl.connected;
+  $('devRemove').disabled = profiles.length < 2;
+  $('devFind').disabled = busy;
+  $('devFind').title = busy ? 'Disconnect first' : 'Look for a GRBL laser on every USB port';
+}
+
+function deviceStatus(text, cls = '') {
+  $('deviceStatus').textContent = text;
+  $('deviceStatus').className = `muted device-status ${cls}`;
+}
+
+$('devicesBtn').onclick = () => {
+  devSel = profile().id;
+  deviceStatus('');
+  renderDevices();
+  $('devicesDialog').showModal();
+};
+$('devCancel').onclick = () => $('devicesDialog').close();
+$('devOk').onclick = () => {
+  if (devSel && devSel !== profileId) {
+    if (grbl.connected) log('Switched device – disconnect and reconnect to use the new settings.', 'err');
+    profileId = devSel;
+    saveProfiles();
+  }
+  $('devicesDialog').close();
+};
+$('devCreate').onclick = () => openProfileDialog({ ...DEFAULT_PROFILE, name: 'GRBL' });
+$('devEdit').onclick = () => openProfileDialog(profiles.find((p) => p.id === devSel));
+$('devDefault').onclick = () => {
+  defaultId = devSel;
+  saveProfiles();
+  renderDevices();
+  deviceStatus('This device will be selected when Laser Studio starts.');
+};
+$('devRemove').onclick = () => {
+  const p = profiles.find((x) => x.id === devSel);
+  if (!p || profiles.length < 2 || !confirm(`Remove “${p.name}”?`)) return;
+  profiles = profiles.filter((x) => x.id !== p.id);
+  if (profileId === p.id) profileId = profiles[0].id;
+  if (defaultId === p.id) defaultId = null;
+  devSel = profileId;
+  saveProfiles();
+  renderDevices();
+};
+$('devExport').onclick = async () => {
+  const p = profiles.find((x) => x.id === devSel);
+  if (!p) return;
+  const { id, ...data } = p;
+  const saved = await window.native.exportDevice(p.name, JSON.stringify({ laserStudioDevice: 1, ...data }, null, 2));
+  if (saved) deviceStatus(`Exported to ${saved}`);
+};
+$('devImport').onclick = async () => {
+  const text = await window.native.importDevice();
+  if (!text) return;
+  try {
+    const { laserStudioDevice, id, ...data } = JSON.parse(text);
+    if (!laserStudioDevice || !(data.bedW > 0) || !(data.bedH > 0)) throw new Error('not a Laser Studio device file');
+    const p = { ...DEFAULT_PROFILE, ...data, id: uid() };
+    profiles.push(p);
+    devSel = p.id;
+    saveProfiles();
+    renderDevices();
+    deviceStatus(`Imported “${p.name}”.`);
+  } catch (e) {
+    deviceStatus(`Could not import: ${e.message}`, 'err-text');
+  }
+};
+
+// Try each USB port: connect, read GRBL's settings ($130/$131 bed size, $30 max power), add a device.
+$('devFind').onclick = async () => {
+  if (grbl.connected) return deviceStatus('Disconnect from the laser first.', 'err-text');
+  await refreshPorts();
+  if (!usbPorts.length) {
+    findFrom = 0;
+    return deviceStatus('No laser found on USB. Switch the laser on, check the cable at both ends, and use a cable that carries data (not a charge-only one).', 'err-text');
+  }
+  $('devFind').disabled = true;
+  try {
+    for (let i = findFrom; i < usbPorts.length; i++) {
+      const port = usbPorts[i];
+      for (const baud of [115200, 250000]) {
+        deviceStatus(`Trying ${port} at ${baud} baud…`);
+        window.native.setPreferredPort(port, true);
+        try {
+          await grbl.connect(baud);
+        } catch (e) {
+          if (e.name === 'SecurityError') {
+            findFrom = i;
+            return deviceStatus(`macOS needs another click to try ${port}. Press Find My Laser again.`, 'err-text');
+          }
+          continue;
+        }
+        try { await grbl.send('$$'); } catch {}
+        const st = { ...grbl.settings };
+        await grbl.disconnect();
+        findFrom = 0;
+        const p = {
+          ...DEFAULT_PROFILE, id: uid(), name: `GRBL (${port.replace(/^cu\./, '')})`, port, baud,
+          bedW: st['130'] > 0 ? Math.round(st['130']) : DEFAULT_PROFILE.bedW,
+          bedH: st['131'] > 0 ? Math.round(st['131']) : DEFAULT_PROFILE.bedH,
+          maxS: st['30'] > 0 ? st['30'] : DEFAULT_PROFILE.maxS,
+        };
+        profiles.push(p);
+        devSel = p.id;
+        saveProfiles();
+        renderDevices();
+        return deviceStatus(`Found a GRBL laser on ${port}: bed ${p.bedW} × ${p.bedH} mm, max power S${p.maxS}. Press OK to use it.`);
+      }
+    }
+    findFrom = 0;
+    deviceStatus('Found USB ports, but none answered as a GRBL laser. Is the laser switched on? If LightBurn is open, close it – only one app can use the port at a time.', 'err-text');
+  } finally {
+    renderDevices();
+  }
+};
 $('profileSelect').onchange = () => { profileId = $('profileSelect').value; saveProfiles(); };
 
 // ---------------------------------------------------------------- start
@@ -1035,6 +1209,8 @@ renderFrameLaser();
 $('addTextBtn').onclick = addText;
 bindProps();
 renderProfileSelect();
+renderPorts();
+refreshPorts();
 setEnabled();
 new ResizeObserver(resizeCanvas).observe(canvas);
 loadFonts()

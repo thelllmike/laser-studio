@@ -9,10 +9,9 @@
 <body>
   <header class="topbar">
     <div class="brand"><span class="dot"></span>Laser Studio</div>
-    <label class="inline">Laser
-      <select id="profileSelect"></select>
-    </label>
-    <button id="editProfileBtn">My laser…</button>
+    <button id="devicesBtn">Devices</button>
+    <select id="portSelect" class="port-select" title="USB port your laser is plugged into"></select>
+    <select id="profileSelect" class="device-select" title="Laser device"></select>
     <div class="spacer"></div>
     <span id="statePill" class="pill">Disconnected</span>
     <span id="posReadout" class="mono readout">X —  Y —</span>
@@ -144,7 +143,7 @@
           <button id="frameBtn">Frame</button>
           <button id="saveBtn">Save G-code</button>
         </div>
-        <label class="check small-check" title="Trace the frame with a faint visible beam. Power is set under “My laser…”.">
+        <label class="check small-check" title="Trace the frame with a faint visible beam. Power is set under Devices → Edit.">
           <input type="checkbox" class="switch" id="frameLaser"> <span id="frameLaserText">Laser on while framing</span></label>
         <button id="startBtn" class="primary wide big">Start</button>
         <div class="btngrid">
@@ -176,8 +175,28 @@
     </div>
   </dialog>
 
+  <dialog id="devicesDialog" class="devices">
+    <h3>Devices</h3>
+    <div class="muted">Your device list</div>
+    <ul id="deviceList" class="device-list" tabindex="0"></ul>
+    <div id="deviceStatus" class="muted device-status"></div>
+    <div class="device-btns">
+      <button type="button" id="devFind">Find My Laser</button>
+      <button type="button" id="devCreate">Create Manually</button>
+      <button type="button" id="devImport">Import</button>
+      <button type="button" id="devDefault">Make Default</button>
+      <button type="button" id="devEdit">Edit</button>
+      <button type="button" id="devRemove">Remove</button>
+      <button type="button" id="devExport">Export</button>
+    </div>
+    <div class="row end">
+      <button type="button" id="devCancel">Cancel</button>
+      <button type="button" id="devOk" class="primary">OK</button>
+    </div>
+  </dialog>
+
   <dialog id="profileDialog">
-    <h3>My laser</h3>
+    <h3 id="profileTitle">Edit device</h3>
     <form id="profileForm">
       <label>Name<input name="name" required></label>
       <div class="row">
@@ -220,8 +239,6 @@
       <p class="muted">Tip: connect first, then press “Read from laser” to fill bed size and max power automatically.</p>
       <div class="row end">
         <button type="button" id="profileRead">Read from laser</button>
-        <button type="button" id="profileNew">New laser</button>
-        <button type="button" id="profileDelete" class="danger">Delete</button>
         <span class="spacer"></span>
         <button type="button" id="profileCancel">Cancel</button>
         <button type="submit" class="primary">Save</button>

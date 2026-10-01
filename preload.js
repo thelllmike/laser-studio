@@ -7,4 +7,8 @@ contextBridge.exposeInMainWorld('native', {
   readFont: (fontPath) => ipcRenderer.invoke('read-font', fontPath),
   chooseFont: () => ipcRenderer.invoke('choose-font'),
   saveGcode: (text) => ipcRenderer.invoke('save-gcode', text),
+  listUsbPorts: () => ipcRenderer.invoke('list-usb-ports'),
+  setPreferredPort: (name, strict = false) => ipcRenderer.send('set-preferred-port', name, strict),
+  exportDevice: (name, text) => ipcRenderer.invoke('export-device', name, text),
+  importDevice: () => ipcRenderer.invoke('import-device'),
 });
