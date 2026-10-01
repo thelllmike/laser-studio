@@ -38,7 +38,9 @@ function createWindow() {
     pendingPortCallback = callback;
     win.webContents.send(
       'serial-port-list',
-      portList.map((p) => ({ portId: p.portId, portName: p.portName, displayName: p.displayName || '' }))
+      portList.map((p) => ({
+        portId: p.portId, portName: p.portName, displayName: p.displayName || '', usb: !!(p.vendorId || p.productId),
+      }))
     );
   });
   ses.setPermissionCheckHandler((_wc, permission) => permission === 'serial');

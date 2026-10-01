@@ -44,7 +44,16 @@ class Grbl extends EventTarget {
     await this.writeRaw('\r\n');
     await sleep(100);
 
+    this.lastStatusAt = 0;
     this.pollTimer = setInterval(() => this.realtime(0x3f /* ? */), 250);
+
+    // A GRBL controller answers "?" within a few hundred ms. Silence means this port isn't a laser.
+    const start = Date.now();
+    while (!this.lastStatusAt && Date.now() - start < 3000) await sleep(100);
+    if (!this.lastStatusAt) {
+      await this.disconnect();
+      throw new Error('No reply from a GRBL laser controller on this port. Check it is the laser\'s USB port, the laser is switched on, and the baud rate under “My laser…” is right.');
+    }
     this.emit('connection', true);
     try {
       await this.send('$$');
@@ -124,6 +133,7 @@ class Grbl extends EventTarget {
   }
 
   parseStatus(line) {
+    this.lastStatusAt = Date.now();
     const parts = line.slice(1, -1).split('|');
     const st = this.status;
     st.state = parts[0].split(':')[0];

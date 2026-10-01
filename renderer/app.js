@@ -666,7 +666,10 @@ $('connectBtn').onclick = async () => {
     $('statePill').textContent = 'Connecting…';
     await grbl.connect(Number(profile().baud) || 115200);
   } catch (e) {
-    if (e.name !== 'NotFoundError') log(`Could not connect: ${e.message}`, 'err');
+    if (e.name !== 'NotFoundError') {
+      log(`Could not connect: ${e.message}`, 'err');
+      alert(`Could not connect.\n\n${e.message}`);
+    }
     $('statePill').textContent = 'Disconnected';
   } finally {
     setEnabled();
@@ -678,13 +681,15 @@ let portAnswered = true;
 window.native.onSerialPortList((list) => {
   const sel = $('portList');
   sel.innerHTML = '';
+  // Bluetooth headphones and the like show up as serial ports too; only USB ports can be the laser.
   const likely = /usb|wch|serial|modem|ch34|cp21/i;
+  list = list.filter((p) => p.usb || likely.test(p.portName));
   list.sort((a, b) => likely.test(b.portName) - likely.test(a.portName));
   for (const p of list) sel.add(new Option(`${p.portName}${p.displayName ? ' – ' + p.displayName : ''}`, p.portId));
   if (sel.options.length) sel.selectedIndex = 0;
   $('portHint').textContent = list.length
     ? 'Usually named “usbserial”, “usbmodem” or “wchusbserial”.'
-    : 'No USB serial device found. Plug in the laser (and install the CH340 driver if needed), then try again.';
+    : 'No laser found on USB. Check the cable is plugged in at both ends, the laser is switched on, and the cable carries data (some USB cables only charge). Then press Connect again.';
   $('portOk').disabled = !list.length;
   portAnswered = false;
   $('portDialog').showModal();
