@@ -195,20 +195,23 @@ const Geometry = (() => {
   const f = (n) => (Math.abs(n) < 0.0005 ? '0' : n.toFixed(3).replace(/\.?0+$/, ''));
 
   /**
-   * Scanning offset: how far (mm) a bidirectional scan line lands from where it should at a given speed.
-   * rows: [{ speed, shift, initial }]. Linear between rows, proportional to speed below the first row,
-   * held at the last row above it.
+   * Scanning offset, matching LightBurn's table: { shift, initial } in mm for a speed (mm/min).
+   * `shift` = how far EACH scan line is moved against its direction of travel (LightBurn: enter half the
+   * measured gap between left-going and right-going lines). `initial` moves the whole engraving
+   * left/right. Linear between rows and extended linearly beyond them; a single row scales with speed
+   * (the error comes from a fixed time delay, so it grows in proportion to speed).
    */
-  function scanShift(rows, speed) {
+  function scanOffsets(rows, speed) {
     const pts = (rows || []).filter((r) => r.speed > 0).sort((a, b) => a.speed - b.speed);
-    if (!pts.length) return 0;
-    const total = (r) => (r.shift || 0) + (r.initial || 0);
-    if (speed <= pts[0].speed) return (total(pts[0]) * speed) / pts[0].speed;
-    for (let i = 1; i < pts.length; i++) {
+    if (!pts.length) return { shift: 0, initial: 0 };
+    const at = (key) => {
+      if (pts.length === 1) return ((pts[0][key] || 0) * speed) / pts[0].speed;
+      let i = pts.findIndex((p) => p.speed >= speed);
+      if (i <= 0) i = i === 0 ? 1 : pts.length - 1; // extend the first or last segment
       const a = pts[i - 1], b = pts[i];
-      if (speed <= b.speed) return total(a) + ((total(b) - total(a)) * (speed - a.speed)) / (b.speed - a.speed);
-    }
-    return total(pts[pts.length - 1]);
+      return (a[key] || 0) + (((b[key] || 0) - (a[key] || 0)) * (speed - a.speed)) / (b.speed - a.speed);
+    };
+    return { shift: Math.max(0, at('shift')), initial: at('initial') };
   }
 
   /**
@@ -224,17 +227,17 @@ const Geometry = (() => {
       const s = Math.round(pct(it.power) * maxS);
       const minS = Math.min(s, Math.round(pct(it.minPower) * maxS));
       const feed = Math.round(it.speed);
-      // Each scan direction is moved back by half the measured shift, so forward and reverse lines meet.
-      const half = scanOffset?.enabled ? scanShift(scanOffset.rows, feed) / 2 : 0;
+      // Each scan line is moved back against its direction of travel by `shift`, so both directions meet.
+      const off = scanOffset?.enabled ? scanOffsets(scanOffset.rows, feed) : { shift: 0, initial: 0 };
       if (it.air) out.push(`${airCmd} ; air assist on`);
       for (let pass = 1; pass <= it.passes; pass++) {
         out.push(`; ${it.label} – ${it.mode}, pass ${pass}/${it.passes}`);
         if (it.mode === 'image') {
-          for (const im of it.images) rasterGcode(out, rasterize(im, it.interval, it.dither), minS, s, feed, half);
+          for (const im of it.images) rasterGcode(out, rasterize(im, it.interval, it.dither), minS, s, feed, off);
         } else if (it.mode === 'fill') {
           for (const row of hatch(it.polys, it.interval)) {
             for (const [x1, x2] of row.segs) {
-              const d = Math.sign(x2 - x1) * half;
+              const d = Math.sign(x2 - x1) * off.shift - off.initial;
               out.push(`G0 X${f(x1 - d)} Y${f(row.y)}`);
               out.push(`G1 X${f(x2 - d)} S${s} F${feed}`);
             }
@@ -254,8 +257,8 @@ const Geometry = (() => {
   }
 
   // Zig-zag raster: one G0 to the start of each burn run, one G1 across it.
-  // Grey levels map onto minS…maxS; `half` is the scanning-offset correction for this speed.
-  function rasterGcode(out, ras, minS, maxS, feed, half = 0) {
+  // Grey levels map onto minS…maxS; `off` is the scanning-offset correction for this speed.
+  function rasterGcode(out, ras, minS, maxS, feed, off = { shift: 0, initial: 0 }) {
     const { cols, rows, interval, level } = ras;
     let forward = true;
     for (let r = 0; r < rows; r++) {
@@ -271,7 +274,7 @@ const Geometry = (() => {
       }
       if (!runs.length) continue;
       const y = ras.maxY - (r + 0.5) * interval;
-      const d = forward ? half : -half;
+      const d = (forward ? off.shift : -off.shift) - off.initial;
       if (!forward) runs.reverse();
       let first = true;
       for (const [c0, c1, q] of runs) {
@@ -302,5 +305,5 @@ const Geometry = (() => {
     ];
   }
 
-  return { textToPolylines, bbox, hatch, buildGcode, frameGcode, mat, imageCorners, rasterize, scanShift };
+  return { textToPolylines, bbox, hatch, buildGcode, frameGcode, mat, imageCorners, rasterize, scanOffsets };
 })();

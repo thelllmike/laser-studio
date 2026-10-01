@@ -301,7 +301,7 @@
           <tbody id="scanRows"></tbody>
         </table>
         <button type="button" id="scanAdd" class="small">+ Add speed</button>
-        <p class="muted">Engrave a back-and-forth fill at each speed and measure how far apart the left-going and right-going lines land. Speeds in between are interpolated. Applies to Fill and Image layers.</p>
+        <p class="muted">Works like LightBurn: engrave a back-and-forth fill at each speed, measure the gap between the left-going and right-going line ends, and enter <b>half</b> of it as Line shift. Each line is moved by that amount. Add at least two speeds (e.g. the slowest and fastest you use); others are worked out from them. Initial offset moves the whole engraving left (−) or right (+). Applies to Fill and Image layers.</p>
       </fieldset>
       <fieldset>
         <legend>Air assist</legend>
