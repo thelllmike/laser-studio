@@ -524,13 +524,18 @@ function resizeCanvas() {
   draw();
 }
 
+// Zoom/pan on top of the "whole bed fits" view. zoom 1 = fit bed; pan is in screen pixels.
+const cam = { zoom: 1, panX: 0, panY: 0 };
+const ZOOM_MIN = 0.5, ZOOM_MAX = 60;
+
 function view() {
   const W = canvas.width / dpr, H = canvas.height / dpr;
   const p = profile();
   const m = 40;
-  const s = Math.max(0.01, Math.min((W - 2 * m) / p.bedW, (H - 2 * m) / p.bedH));
-  const ox = (W - p.bedW * s) / 2;
-  const oy = (H + p.bedH * s) / 2;
+  const fit = Math.max(0.01, Math.min((W - 2 * m) / p.bedW, (H - 2 * m) / p.bedH));
+  const s = fit * cam.zoom;
+  const ox = (W - p.bedW * s) / 2 + cam.panX;
+  const oy = (H + p.bedH * s) / 2 + cam.panY;
   return {
     s, ox, oy,
     toPx: (x, y) => [ox + x * s, oy - y * s],
@@ -552,13 +557,20 @@ function draw() {
   ctx.fillStyle = '#23252a';
   ctx.fillRect(bx0, by0, p.bedW * v.s, p.bedH * v.s);
   ctx.lineWidth = 1;
-  for (let x = 0; x <= p.bedW; x += 10) {
-    ctx.strokeStyle = x % 50 === 0 ? '#3a3e46' : '#2b2e34';
+  // Grid spacing follows the zoom: minor lines ≥ 8 px apart, labels ≥ 45 px apart.
+  const STEPS = [0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500];
+  const minor = STEPS.find((d) => d * v.s >= 8) || 500;
+  const major = STEPS.find((d) => d * v.s >= 45 && d % minor === 0) || 500;
+  const [mx0, my1] = v.toMm(0, 0), [mx1, my0] = v.toMm(W, H);
+  const from = (lo) => Math.max(0, Math.ceil(lo / minor) * minor);
+  const isMajor = (n) => Math.abs(n / major - Math.round(n / major)) < 1e-6;
+  for (let x = from(mx0); x <= Math.min(p.bedW, mx1); x += minor) {
+    ctx.strokeStyle = isMajor(x) ? '#3a3e46' : '#2b2e34';
     const [px] = v.toPx(x, 0);
     line(px, by0, px, by0 + p.bedH * v.s);
   }
-  for (let y = 0; y <= p.bedH; y += 10) {
-    ctx.strokeStyle = y % 50 === 0 ? '#3a3e46' : '#2b2e34';
+  for (let y = from(my0); y <= Math.min(p.bedH, my1); y += minor) {
+    ctx.strokeStyle = isMajor(y) ? '#3a3e46' : '#2b2e34';
     const [, py] = v.toPx(0, y);
     line(bx0, py, bx0 + p.bedW * v.s, py);
   }
@@ -566,10 +578,17 @@ function draw() {
   ctx.strokeRect(bx0, by0, p.bedW * v.s, p.bedH * v.s);
   ctx.fillStyle = '#6b7079';
   ctx.font = '10px -apple-system, sans-serif';
+  const fmt = (n) => String(Math.round(n * 10) / 10);
   ctx.textAlign = 'center';
-  for (let x = 0; x <= p.bedW; x += 50) { const [px, py] = v.toPx(x, 0); ctx.fillText(String(x), px, py + 14); }
+  const labelY = Math.min(H - 32, Math.max(14, v.toPx(0, 0)[1] + 14)); // stay above the hint bar
+  for (let x = Math.max(0, Math.ceil(mx0 / major) * major); x <= Math.min(p.bedW, mx1); x += major) {
+    ctx.fillText(fmt(x), v.toPx(x, 0)[0], labelY);
+  }
   ctx.textAlign = 'right';
-  for (let y = 50; y <= p.bedH; y += 50) { const [px, py] = v.toPx(0, y); ctx.fillText(String(y), px - 5, py + 3); }
+  const labelX = Math.min(W - 4, Math.max(30, v.toPx(0, 0)[0] - 5));
+  for (let y = Math.max(major, Math.ceil(my0 / major) * major); y <= Math.min(p.bedH, my1); y += major) {
+    ctx.fillText(fmt(y), labelX, v.toPx(0, y)[1] + 3);
+  }
 
   const wco = grbl.status.wco;
 
@@ -611,6 +630,19 @@ function draw() {
         ctx.fillText(`${o.geom.width.toFixed(1)} × ${o.geom.height.toFixed(1)} mm`, x0 - 3, y0 - 8);
       }
     }
+  }
+
+  // drag-to-select box: solid = items fully inside, dashed (right-to-left) = items it touches
+  if (marquee) {
+    const x = Math.min(marquee.x0, marquee.x1), y = Math.min(marquee.y0, marquee.y1);
+    const w = Math.abs(marquee.x1 - marquee.x0), h = Math.abs(marquee.y1 - marquee.y0);
+    ctx.fillStyle = 'rgba(59,130,246,0.12)';
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = '#60a5fa';
+    ctx.lineWidth = 1;
+    if (marquee.x1 < marquee.x0) ctx.setLineDash([5, 3]);
+    ctx.strokeRect(x, y, w, h);
+    ctx.setLineDash([]);
   }
 
   // smart guides while dragging
@@ -702,7 +734,18 @@ function line(x1, y1, x2, y2) {
 }
 
 let drag = null;
+let marquee = null; // drag-to-select box, in screen px
+let pan = null;
+let spaceHeld = false;
+
 canvas.addEventListener('pointerdown', (e) => {
+  // Space + drag, or the middle mouse button, pans the view.
+  if (spaceHeld || e.button === 1) {
+    pan = { x: e.clientX, y: e.clientY, px: cam.panX, py: cam.panY };
+    canvas.setPointerCapture(e.pointerId);
+    canvas.style.cursor = 'grabbing';
+    return;
+  }
   const v = view();
   const [mx, my] = v.toMm(e.offsetX, e.offsetY);
   const wco = grbl.status.wco;
@@ -711,8 +754,11 @@ canvas.addEventListener('pointerdown', (e) => {
   const hits = objects.filter((o) => o.geom &&
     dx >= o.x - tol && dx <= o.x + o.geom.width + tol && dy >= o.y - tol && dy <= o.y + o.geom.height + tol);
   const hit = hits.sort((a, b) => a.geom.width * a.geom.height - b.geom.width * b.geom.height)[0];
-  if (!hit) select([]);
-  else if (e.shiftKey || e.metaKey) toggleSelect(hit.id);
+  if (!hit) {
+    if (!(e.shiftKey || e.metaKey)) select([]);
+    marquee = { x0: e.offsetX, y0: e.offsetY, x1: e.offsetX, y1: e.offsetY, add: e.shiftKey || e.metaKey };
+    canvas.setPointerCapture(e.pointerId);
+  } else if (e.shiftKey || e.metaKey) toggleSelect(hit.id);
   else if (!selection.has(hit.id)) select([hit.id]);
   else selectedId = hit.id;
   if (hit && selection.has(hit.id)) {
@@ -726,6 +772,18 @@ canvas.addEventListener('pointerdown', (e) => {
   refresh();
 });
 canvas.addEventListener('pointermove', (e) => {
+  if (pan) {
+    cam.panX = pan.px + e.clientX - pan.x;
+    cam.panY = pan.py + e.clientY - pan.y;
+    draw();
+    return;
+  }
+  if (marquee) {
+    marquee.x1 = e.offsetX;
+    marquee.y1 = e.offsetY;
+    draw();
+    return;
+  }
   if (!drag) return;
   const v = view();
   const [mx, my] = v.toMm(e.offsetX, e.offsetY);
@@ -741,10 +799,88 @@ canvas.addEventListener('pointermove', (e) => {
   draw();
 });
 canvas.addEventListener('pointerup', () => {
+  if (pan) { pan = null; canvas.style.cursor = spaceHeld ? 'grab' : 'default'; return; }
+  if (marquee) {
+    const m = marquee;
+    marquee = null;
+    if (Math.abs(m.x1 - m.x0) > 3 || Math.abs(m.y1 - m.y0) > 3) {
+      const v = view(), wco = grbl.status.wco;
+      const [ax, ay] = v.toMm(Math.min(m.x0, m.x1), Math.max(m.y0, m.y1));
+      const [bx, by] = v.toMm(Math.max(m.x0, m.x1), Math.min(m.y0, m.y1));
+      const box = { minX: ax - wco.x, minY: ay - wco.y, maxX: bx - wco.x, maxY: by - wco.y };
+      const touching = m.x1 < m.x0; // right-to-left = anything the box touches, like LightBurn
+      const ids = objects.filter((o) => {
+        if (!o.geom) return false;
+        const r = { minX: o.x, minY: o.y, maxX: o.x + o.geom.width, maxY: o.y + o.geom.height };
+        return touching
+          ? r.minX <= box.maxX && r.maxX >= box.minX && r.minY <= box.maxY && r.maxY >= box.minY
+          : r.minX >= box.minX && r.maxX <= box.maxX && r.minY >= box.minY && r.maxY <= box.maxY;
+      }).map((o) => o.id);
+      select(m.add ? [...selection, ...ids] : ids);
+    }
+    refresh();
+    return;
+  }
   if (drag && !drag.moved && drag.narrowTo) { select([drag.narrowTo]); refresh(); }
   drag = null;
   draw();
   canvas.style.cursor = 'default';
+});
+
+// ---------------------------------------------------------------- zoom
+
+function zoomAt(px, py, factor) {
+  const before = view().toMm(px, py);
+  cam.zoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, cam.zoom * factor));
+  cam.panX = 0; cam.panY = 0;
+  const [qx, qy] = view().toPx(...before);
+  cam.panX = px - qx;
+  cam.panY = py - qy;
+  draw();
+  renderZoom();
+}
+
+/** Zoom so a box in machine mm fills the view (with a margin). */
+function zoomTo(box) {
+  if (!box) return;
+  const W = canvas.width / dpr, H = canvas.height / dpr;
+  cam.zoom = 1; cam.panX = 0; cam.panY = 0;
+  const fit = view().s;
+  // Never zoom closer than a 40 mm window, so a tiny item doesn't fill the screen.
+  const w = Math.max(40, box.maxX - box.minX), h = Math.max(40, box.maxY - box.minY);
+  cam.zoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.min((W * 0.85) / w, (H * 0.85) / h) / fit));
+  cam.panX = 0; cam.panY = 0;
+  const [cx, cy] = view().toPx((box.minX + box.maxX) / 2, (box.minY + box.maxY) / 2);
+  cam.panX = W / 2 - cx;
+  cam.panY = H / 2 - cy;
+  draw();
+  renderZoom();
+}
+const toMachine = (r) => r && { minX: r.minX + grbl.status.wco.x, maxX: r.maxX + grbl.status.wco.x, minY: r.minY + grbl.status.wco.y, maxY: r.maxY + grbl.status.wco.y };
+
+function renderZoom() { $('zoomPct').textContent = `${Math.round(cam.zoom * 100)}%`; }
+
+// Trackpad: pinch (sent as ctrl+wheel) or ⌘+scroll zooms at the cursor; two-finger scroll pans.
+canvas.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  if (e.ctrlKey || e.metaKey) zoomAt(e.offsetX, e.offsetY, Math.exp(-e.deltaY * 0.01));
+  else { cam.panX -= e.deltaX; cam.panY -= e.deltaY; draw(); }
+}, { passive: false });
+
+const stageCenter = () => [canvas.width / dpr / 2, canvas.height / dpr / 2];
+$('zoomIn').onclick = () => zoomAt(...stageCenter(), 1.5);
+$('zoomOut').onclick = () => zoomAt(...stageCenter(), 1 / 1.5);
+$('zoomFit').onclick = () => { cam.zoom = 1; cam.panX = cam.panY = 0; draw(); renderZoom(); };
+$('zoomArea').onclick = () => zoomTo(toMachine(areaRect()));
+$('zoomSel').onclick = () => zoomTo(toMachine(objsBBox(selection.size ? selectedObjs() : objects)));
+
+window.addEventListener('keydown', (e) => {
+  if (e.code !== 'Space' || ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(document.activeElement?.tagName)) return;
+  e.preventDefault();
+  if (!spaceHeld) { spaceHeld = true; if (!pan) canvas.style.cursor = 'grab'; }
+});
+window.addEventListener('keyup', (e) => {
+  if (e.code === 'Space') { spaceHeld = false; if (!pan) canvas.style.cursor = 'default'; }
 });
 
 // ---------------------------------------------------------------- console
@@ -1331,6 +1467,7 @@ renderProfileSelect();
 renderPorts();
 refreshPorts();
 renderArea();
+renderZoom();
 setEnabled();
 new ResizeObserver(resizeCanvas).observe(canvas);
 loadFonts()

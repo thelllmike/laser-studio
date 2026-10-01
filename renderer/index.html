@@ -121,8 +121,16 @@
 
     <section class="stage">
       <canvas id="canvas"></canvas>
+      <div class="zoombar">
+        <button type="button" id="zoomOut" title="Zoom out">−</button>
+        <span id="zoomPct" class="mono">100%</span>
+        <button type="button" id="zoomIn" title="Zoom in">+</button>
+        <button type="button" id="zoomFit" title="Show the whole bed">Bed</button>
+        <button type="button" id="zoomArea" title="Zoom to the design area">Area</button>
+        <button type="button" id="zoomSel" title="Zoom to the selection (or the whole design)">Selection</button>
+      </div>
       <div id="dropHint" class="drop-hint" hidden>Drop LightBurn file to import</div>
-      <div class="stage-hint muted">Drag to move (snaps, ⌥ = free) · Shift-click for several · Drop .lbrn2 files here · Green + = your origin · Red ● = laser head</div>
+      <div class="stage-hint muted">Box-select: drag empty space · Zoom: pinch · Pan: Space+drag · ⌥ = no snap · Green + = origin · Red ● = laser</div>
     </section>
 
     <aside class="panel">
